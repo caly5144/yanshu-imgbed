@@ -1,50 +1,63 @@
 # This is a basic workflow to help you get started with Actions
-
 name: Release and Build
-
 # Controls when the workflow will run
 on:
   release:
     types: [created]
-
 permissions:
-  contents: write
-
+  contents: write # 确保有写入权限，以便上传Release Assets
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   # This workflow contains a single job called "build"
   build-and-release:
     # The type of runner that the job will run on
     runs-on: ubuntu-latest
-
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - name: Checkout repository
         uses: actions/checkout@v4
-
       # Sets up the Go environment
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.5' 
-
       # Installs UPX for compressing executables
-      - name: Set up UPX
+      - name: Set up UPX # 修正了 upx-version 的警告
         uses: crazy-max/ghaction-upx@v3
         with:
-          upx-version: latest
-
+          version: latest # 将 'upx-version' 改为 'version'
       # Build for Windows
       - name: Build for Windows (amd64)
         run: |
           GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o yanshu-imgbed.exe .
           upx --best --lzma yanshu-imgbed.exe
           zip yanshu-imgbed-windows-amd64.zip yanshu-imgbed.exe
-
       # Build for Linux
       - name: Build for Linux (amd64)
         run: |
           GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o yanshu-imgbed .
           upx --best --lzma yanshu-imgbed
           tar -czvf yanshu-imgbed-linux-amd64.tar.gz yanshu-imgbed
+
+      # --- 新增的上传Release Assets的步骤 ---
+
+      - name: Upload Windows Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用内置的token进行认证
+        with:
+          upload_url: ${{ github.event.release.upload_url }} # Release创建后，会提供一个上传URL
+          asset_path: ./yanshu-imgbed-windows-amd64.zip # 需要上传的文件的路径
+          asset_name: yanshu-imgbed-windows-amd64.zip # 在Release页面显示的文件名
+          asset_content_type: application/zip # 文件的MIME类型
+
+      - name: Upload Linux Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./yanshu-imgbed-linux-amd64.tar.gz
+          asset_name: yanshu-imgbed-linux-amd64.tar.gz
+          asset_content_type: application/gzip # 或者 application/x-gzip
