@@ -22,25 +22,19 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.5' 
-      # Installs UPX for compressing executables
-      - name: Set up UPX # 修正了 upx-version 的警告
-        uses: crazy-max/ghaction-upx@v3
-        with:
-          version: latest # 将 'upx-version' 改为 'version'
+      
       # Build for Windows
       - name: Build for Windows (amd64)
         run: |
           GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o yanshu-imgbed.exe .
-          upx --best --lzma yanshu-imgbed.exe
-          zip yanshu-imgbed-windows-amd64.zip yanshu-imgbed.exe
+          # 不再进行zip打包，直接生成可执行文件
       # Build for Linux
       - name: Build for Linux (amd64)
         run: |
           GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o yanshu-imgbed .
-          upx --best --lzma yanshu-imgbed
-          tar -czvf yanshu-imgbed-linux-amd64.tar.gz yanshu-imgbed
+          # 不再进行tar打包，直接生成可执行文件
 
-      # --- 新增的上传Release Assets的步骤 ---
+      # --- 上传Release Assets的步骤 ---
 
       - name: Upload Windows Release Asset
         uses: actions/upload-release-asset@v1
@@ -48,9 +42,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用内置的token进行认证
         with:
           upload_url: ${{ github.event.release.upload_url }} # Release创建后，会提供一个上传URL
-          asset_path: ./yanshu-imgbed-windows-amd64.zip # 需要上传的文件的路径
-          asset_name: yanshu-imgbed-windows-amd64.zip # 在Release页面显示的文件名
-          asset_content_type: application/zip # 文件的MIME类型
+          asset_path: ./yanshu-imgbed.exe # 直接上传Windows可执行文件
+          asset_name: yanshu-imgbed-windows-amd64.exe # 在Release页面显示的文件名
+          asset_content_type: application/octet-stream # 通用二进制文件类型
 
       - name: Upload Linux Release Asset
         uses: actions/upload-release-asset@v1
@@ -58,6 +52,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./yanshu-imgbed-linux-amd64.tar.gz
-          asset_name: yanshu-imgbed-linux-amd64.tar.gz
-          asset_content_type: application/gzip # 或者 application/x-gzip
+          asset_path: ./yanshu-imgbed # 直接上传Linux可执行文件
+          asset_name: yanshu-imgbed-linux-amd64 # 在Release页面显示的文件名
+          asset_content_type: application/octet-stream # 通用二进制文件类型
