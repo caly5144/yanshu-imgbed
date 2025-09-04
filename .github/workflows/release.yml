@@ -24,15 +24,24 @@ jobs:
           go-version: '1.24.5' 
       
       # Build for Windows
-      - name: Build for Windows (amd64)
+      - name: Build for Windows (amd64) with CGO
         run: |
-          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o yanshu-imgbed.exe .
-          # 不再进行zip打包，直接生成可执行文件
+          # 安装 MinGW-w64 交叉编译器
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64
+          
+          # 设置 C 编译器环境变量，Go会使用它来链接CGO代码
+          export CC=x86_64-w64-mingw32-gcc
+          
+          # 启用 CGO 编译 Windows 可执行文件
+          CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o yanshu-imgbed.exe .
+      
       # Build for Linux
-      - name: Build for Linux (amd64)
+      - name: Build for Linux (amd64) with CGO
         run: |
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o yanshu-imgbed .
-          # 不再进行tar打包，直接生成可执行文件
+          # 在 Linux 平台编译 Linux 可执行文件时，CGO 通常默认是启用的，但明确设置更安全
+          # 且不需要额外安装C编译器，因为ubuntu-latest自带gcc
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o yanshu-imgbed .
 
       # --- 上传Release Assets的步骤 ---
 
