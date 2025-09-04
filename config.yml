@@ -1,0 +1,10 @@
+server:
+  port: "3030"
+  mode: "release" # < 可选值为 "debug" 或 "release"
+
+database:
+  dsn: "data/image_bed.db"
+
+jwt:
+  secret: "your-super-secret-key-that-should-be-changed" # 请修改为更安全的密钥
+  expiration_hours: 24

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="static/js/toast.js" defer></script>
+    <title>登录 - 雁陎图床</title>
+    <link rel="stylesheet" href="/static/css/login.css">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-icon">
+            <svg viewBox="0 0 24 24">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/>
+            </svg>
+        </div>
+        <h1>欢迎回来</h1>
+        <p>登录您的图床账户</p>
+        <div id="errorMessage" class="error-message" style="display: none;"></div>
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="username">用户名</label>
+                <input type="text" id="username" name="username" required autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label for="password">密码</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password">
+            </div>
+            <button type="submit" class="btn btn-primary" id="submitBtn">登录</button>
+        </form>
+    </div>
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errorMessage = document.getElementById('errorMessage');
+            const submitBtn = document.getElementById('submitBtn');
+            
+            errorMessage.style.display = 'none';
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<span class="loading"></span>登录中...';
+            
+            try {
+                const response = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    localStorage.setItem('jwt_token', data.token);
+                    // 成功动画
+                    submitBtn.innerHTML = '✓ 登录成功';
+                    setTimeout(() => {
+                        const redirectTo = localStorage.getItem('redirect_after_login') || '/';
+                        localStorage.removeItem('redirect_after_login');
+                        window.location.href = redirectTo;
+                    }, 500);
+                } else {
+                    errorMessage.textContent = data.error || '登录失败';
+                    errorMessage.style.display = 'block';
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = '登录';
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                errorMessage.textContent = '网络错误，请稍后再试。';
+                errorMessage.style.display = 'block';
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '登录';
+            }
+        });
+        
+        // 自动聚焦用户名输入框
+        document.getElementById('username').focus();
+    </script>
+</body>
+</html>

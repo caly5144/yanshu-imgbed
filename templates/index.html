@@ -1,0 +1,263 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="static/js/toast.js" defer></script>
+    <title>雁陎图床 - 上传图片</title>
+    <link rel="stylesheet" href="/static/css/index.css">
+    <script>
+        function checkAuth() {
+            const token = localStorage.getItem('jwt_token');
+            if (!token) {
+                localStorage.setItem('redirect_after_login', window.location.pathname);
+                window.location.href = '/login';
+            }
+        }
+        const originalFetch = window.fetch;
+        window.fetch = function(url, options) {
+            options = options || {};
+            options.headers = options.headers || {};
+            const token = localStorage.getItem('jwt_token');
+            if (token) {
+                options.headers['Authorization'] = `Bearer ${token}`;
+            }
+            return new Promise((resolve, reject) => {
+                originalFetch(url, options)
+                    .then(response => {
+                        if (response.status === 401 || response.status === 403) {
+                            console.error('Authentication failed, redirecting to login.');
+                            localStorage.setItem('redirect_after_login', window.location.pathname);
+                            window.location.href = '/login';
+                            reject(new Error('Authentication Failed'));
+                            return;
+                        }
+                        resolve(response);
+                    })
+                    .catch(error => {
+                        reject(error);
+                    });
+            });
+        };
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>雁陎图床</h1>
+            <p>支持多图床分发，智能访问策略</p>
+            <nav style="margin-top: 20px;">
+                <a href="/admin" target="_blank">🛠️ 后台管理</a>
+                <a href="#" onclick="logout()">🚪 退出登录</a>
+            </nav>
+        </div>
+        <div class="upload-area" id="uploadArea">
+            <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+            <div class="upload-text">点击或拖拽图片到这里上传</div>
+            <div class="upload-hint">支持 JPG、PNG、GIF 等图片格式，单文件最大 {{.MaxUploadMB}}MB</div>
+            <input type="file" id="fileInput" accept="image/*" multiple>
+            <div class="progress-bar" id="progressBar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+        </div>
+        <div class="backend-selection">
+            <h3>选择分发后端 (可多选，默认全选)</h3>
+            <div id="backendCheckboxes">
+                {{if .Backends}}
+                    {{range .Backends}}
+                    <div class="backend-checkbox-item">
+                        <input type="checkbox" id="backend-{{.ID}}" value="{{.ID}}" checked>
+                        <label for="backend-{{.ID}}">{{.Name}} ({{.Type}})</label>
+                    </div>
+                    {{end}}
+                {{else}}
+                    <p>没有可用的存储后端，请联系管理员。</p>
+                {{end}}
+            </div>
+        </div>
+        <div class="preview-area" id="previewArea"></div>
+    </div>
+    <script>
+        checkAuth();
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const previewArea = document.getElementById('previewArea');
+        const progressBar = document.getElementById('progressBar');
+        const progressFill = document.getElementById('progressFill');
+        const backendCheckboxesContainer = document.getElementById('backendCheckboxes');
+        const maxUploadMB = {{.MaxUploadMB}};
+        let availableBackends = [];
+        
+        function bindEventListeners() {
+            uploadArea.addEventListener('click', () => {
+                fileInput.click();
+            });
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+            uploadArea.addEventListener('dragleave', () => {
+                uploadArea.classList.remove('dragover');
+            });
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                handleFiles(e.dataTransfer.files);
+            });
+            fileInput.addEventListener('change', (e) => {
+                handleFiles(e.target.files);
+            });
+        }
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            checkAuth();
+            bindEventListeners();
+        });
+        
+        function handleFiles(files) {
+            Array.from(files).forEach(file => {
+                if (!file.type.startsWith('image/')) {
+                    beautifulAlert.alert('请选择图片文件', 'warning');
+                    return;
+                }
+                if (file.size > maxUploadMB * 1024 * 1024) { 
+                    beautifulAlert.alert(`文件大小不能超过${maxUploadMB}MB`, 'warning');
+                    return;
+                }
+                uploadFile(file);
+            });
+        }
+        
+        function uploadFile(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const selectedBackendCheckboxes = backendCheckboxesContainer.querySelectorAll('input[type="checkbox"]:checked');
+            if (selectedBackendCheckboxes.length === 0) {
+                beautifulAlert.alert('请至少选择一个存储后端！',  'warning');
+                return;
+            }
+            selectedBackendCheckboxes.forEach(checkbox => {
+                formData.append('backends', checkbox.value);
+            });
+            
+            progressBar.classList.add('active');
+            progressFill.style.width = '0%';
+            
+            const xhr = new XMLHttpRequest();
+            
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percentComplete = (e.loaded / e.total) * 100;
+                    progressFill.style.width = percentComplete + '%';
+                }
+            });
+            
+            xhr.addEventListener('load', () => {
+                progressBar.classList.remove('active');
+                if (xhr.status === 200) {
+                    const response = JSON.parse(xhr.responseText);
+                    if (response.data) {
+                        showPreview(response.data);
+                    } else {
+                        beautifulAlert.alert('上传失败: ' + (response.error || '未知错误'), 'error');
+                    }
+                } else {
+                    beautifulAlert.alert('上传失败，服务器错误', 'error');
+                }
+            });
+            
+            xhr.addEventListener('error', () => {
+                progressBar.classList.remove('active');
+                beautifulAlert.alert('上传失败，网络错误', 'error');
+            });
+            
+            xhr.open('POST', '/api/upload/web');
+            const jwtToken = localStorage.getItem('jwt_token');
+            if (jwtToken) {
+                 xhr.setRequestHeader('Authorization', `Bearer ${jwtToken}`);
+            } else {
+                beautifulAlert.alert('请先登录以使用上传功能！', 'warning');
+                 progressBar.classList.remove('active');
+                 return;
+            }
+            xhr.send(formData);
+        }
+        
+        function showPreview(imageData) {
+            const preview = document.createElement('div');
+            preview.className = 'preview-item';
+            const imgUrl = `/i/${imageData.hash}`;
+            let backendLinksHtml = '';
+            if (imageData.locations && imageData.locations.length > 0) {
+                backendLinksHtml = `<h4 style="margin-top: 20px; margin-bottom: 12px;">分发链接:</h4>`;
+                imageData.locations.forEach(loc => {
+                    backendLinksHtml += `
+                        <div class="link-group">
+                            <span class="link-label">${loc.backend_name} ${loc.is_active ? '✅' : '❌'}</span>
+                            <input class="link-input" value="${loc.url}" readonly>
+                            <button class="copy-btn" onclick="copyLink(this)">复制</button>
+                        </div>
+                    `;
+                });
+            }
+            preview.innerHTML = `
+                <div class="preview-header">
+                    <img src="${imgUrl}" alt="${imageData.filename}">
+                    <div class="preview-info">
+                        文件名：${imageData.filename} | 大小：${formatSize(imageData.size)}
+                    </div>
+                </div>
+                <div class="preview-links">
+                    <div class="link-group">
+                        <span class="link-label">直链 (跳转)</span>
+                        <input class="link-input" value="${window.location.origin}${imgUrl}" readonly>
+                        <button class="copy-btn" onclick="copyLink(this)">复制</button>
+                    </div>
+                    <div class="link-group">
+                        <span class="link-label">Markdown</span>
+                        <input class="link-input" value="![${imageData.filename}](${window.location.origin}${imgUrl})" readonly>
+                        <button class="copy-btn" onclick="copyLink(this)">复制</button>
+                    </div>
+                    <div class="link-group">
+                        <span class="link-label">HTML</span>
+                        <input class="link-input" value='<img src="${window.location.origin}${imgUrl}" alt="${imageData.filename}">' readonly>
+                        <button class="copy-btn" onclick="copyLink(this)">复制</button>
+                    </div>
+                    ${backendLinksHtml}
+                </div>
+            `;
+            previewArea.insertBefore(preview, previewArea.firstChild);
+        }
+        
+        function copyLink(btn) {
+            const input = btn.previousElementSibling;
+            input.select();
+            document.execCommand('copy');
+            
+            const originalText = btn.textContent;
+            btn.textContent = '✓ 已复制';
+            setTimeout(() => {
+                btn.textContent = originalText;
+            }, 2000);
+        }
+        
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        function logout() {
+            localStorage.removeItem('jwt_token');
+            localStorage.removeItem('api_token');
+            window.location.href = '/login';
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="static/js/toast.js" defer></script>
+    <title>图片详情</title>
+    <link rel="stylesheet" href="/static/css/image_detail.css">
+    <script>
+        // 认证检查
+        (function() {
+            if (!localStorage.getItem('jwt_token')) {
+                window.location.href = '/login';
+            }
+            const originalFetch = window.fetch;
+            window.fetch = function(url, options) {
+                options = options || {}; 
+                options.headers = options.headers || {};
+                const token = localStorage.getItem('jwt_token');
+                if (token) { 
+                    options.headers['Authorization'] = `Bearer ${token}`; 
+                }
+                return originalFetch(url, options).then(response => {
+                    if (response.status === 401 || response.status === 403) {
+                        localStorage.clear();
+                        window.location.href = '/login';
+                    }
+                    return response;
+                });
+            };
+        })();
+    </script>
+</head>
+<body>
+    <div class="breadcrumb">
+        <a href="/admin">后台管理</a>
+        <span>›</span>
+        <a href="#" onclick="history.back()">图片管理</a>
+        <span>›</span>
+        <span>图片详情</span>
+    </div>
+    
+    <div class="details-container">
+        <div class="image-preview-pane">
+            <img id="imagePreview" src="" alt="Image preview">
+        </div>
+        <div class="info-pane">
+            <div class="info-top">
+                <div class="tabs" id="backendTabs"></div>
+                <div class="links-area">
+                    <div class="link-group">
+                        <label>URL</label>
+                        <div class="input-with-copy">
+                            <input type="text" id="linkUrl" readonly>
+                            <button class="btn btn-primary" onclick="copyToClipboard('linkUrl')">复制</button>
+                        </div>
+                    </div>
+                    <div class="link-group">
+                        <label>Markdown</label>
+                        <div class="input-with-copy">
+                            <input type="text" id="linkMarkdown" readonly>
+                            <button class="btn btn-primary" onclick="copyToClipboard('linkMarkdown')">复制</button>
+                        </div>
+                    </div>
+                    <div class="link-group">
+                        <label>HTML</label>
+                        <div class="input-with-copy">
+                            <input type="text" id="linkHtml" readonly>
+                            <button class="btn btn-primary" onclick="copyToClipboard('linkHtml')">复制</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="info-bottom" id="statusArea">
+                <h4 style="margin-bottom: 16px; color: var(--text-primary);">后端状态</h4>
+                <div class="status-item">
+                    <strong>当前状态</strong>
+                    <span id="locationStatus"></span>
+                </div>
+                <div class="status-item">
+                    <strong>失败次数</strong>
+                    <span id="failureCount" style="font-weight: 600;"></span>
+                </div>
+                <button id="toggleStatusBtn" class="btn"></button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let imageData = null;
+        let currentTab = 'distribution';
+        
+        function getUuidFromPath() {
+            const pathParts = window.location.pathname.split('/');
+            return pathParts[pathParts.length - 1];
+        }
+        
+        async function loadImageDetails() {
+            const uuid = getUuidFromPath();
+            if (!uuid) return;
+            document.getElementById('imagePreview').src = `/i/${uuid}`;
+            const response = await fetch(`/api/admin/images/${uuid}`);
+            if (!response.ok) {
+                beautifulAlert.alert('Failed to load image details', 'error');
+                return;
+            }
+            imageData = await response.json();
+            
+            renderTabs();
+            selectTab('distribution');
+        }
+        
+        function renderTabs() {
+            const tabsContainer = document.getElementById('backendTabs');
+            let tabsHtml = '<button class="tab" data-id="distribution" onclick="selectTab(\'distribution\')">🌐 分发</button>';
+            imageData.StorageLocations.forEach(loc => {
+                tabsHtml += `<button class="tab" data-id="${loc.ID}" onclick="selectTab(${loc.ID})">${loc.Backend.Name}</button>`;
+            });
+            tabsContainer.innerHTML = tabsHtml;
+        }
+        
+        function selectTab(locationIdOrType) {
+            currentTab = locationIdOrType;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            const tabElement = document.querySelector(`.tab[data-id="${currentTab}"]`);
+            if (tabElement) {
+                tabElement.classList.add('active');
+            }
+            updateInfoForTab();
+        }
+        
+        function updateInfoForTab() {
+            const statusArea = document.getElementById('statusArea');
+            let url, filename = imageData.OriginalFilename;
+            if (currentTab === 'distribution') {
+                url = `${window.location.origin}/i/${imageData.UUID}`;
+                statusArea.style.display = 'none';
+            } else {
+                const loc = imageData.StorageLocations.find(l => l.ID === currentTab);
+                if (!loc) return;
+                
+                url = loc.URL;
+                statusArea.style.display = 'block';
+                const statusSpan = document.getElementById('locationStatus');
+                const toggleBtn = document.getElementById('toggleStatusBtn');
+                statusSpan.textContent = loc.IsActive ? '有效' : '失效';
+                statusSpan.className = loc.IsActive ? 'status-badge status-active' : 'status-badge status-failed';
+                document.getElementById('failureCount').textContent = loc.FailureCount;
+                
+                toggleBtn.textContent = loc.IsActive ? '手动设为失效' : '手动设为有效';
+                toggleBtn.className = `btn ${loc.IsActive ? 'btn-danger' : 'btn-success'}`;
+                toggleBtn.onclick = () => toggleLocationStatus(loc.ID);
+            }
+            document.getElementById('linkUrl').value = url;
+            document.getElementById('linkMarkdown').value = `![${filename}](${url})`;
+            document.getElementById('linkHtml').value = `<img src="${url}" alt="${filename}">`;
+        }
+        
+        async function toggleLocationStatus(locationId) {
+            const response = await fetch(`/api/admin/storagelocations/${locationId}/toggle`, {
+                method: 'POST'
+            });
+            if (!response.ok) {
+                beautifulAlert.alert('Failed to toggle status', 'error');
+                return;
+            }
+            const updatedLocation = await response.json();
+            
+            const index = imageData.StorageLocations.findIndex(l => l.ID === locationId);
+            if (index !== -1) {
+                imageData.StorageLocations[index].IsActive = updatedLocation.IsActive;
+            }
+            updateInfoForTab();
+        }
+        
+        function copyToClipboard(elementId) {
+            const input = document.getElementById(elementId);
+            input.select();
+            document.execCommand('copy');
+            
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = '✓ 已复制';
+            setTimeout(() => {
+                btn.textContent = originalText;
+            }, 2000);
+        }
+        
+        document.addEventListener('DOMContentLoaded', loadImageDetails);
+    </script>
+</body>
+</html>

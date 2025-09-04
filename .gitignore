@@ -1,0 +1,9 @@
+yanshu-imgbed
+yanshu-imgbed.exe
+
+/data/
+/uploads/
+
+.idea/
+.vscode/
+*.DS_Store

@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>雁陎图床 - 后台管理</title>
+    <link rel="stylesheet" href="/static/css/admin.css">
+    <script src="static/js/toast.js" defer></script>
+    <script>
+        function checkAuth() {
+            if (!localStorage.getItem('jwt_token')) {
+                localStorage.setItem('redirect_after_login', window.location.pathname);
+                window.location.href = '/login';
+            }
+        }
+        checkAuth();
+        const originalFetch = window.fetch;
+        window.fetch = function(url, options) {
+            options = options || {};
+            options.headers = options.headers || {};
+            const token = localStorage.getItem('jwt_token');
+            if (token) {
+                options.headers['Authorization'] = `Bearer ${token}`;
+            }
+            return new Promise((resolve, reject) => {
+                originalFetch(url, options).then(response => {
+                    if (response.status === 401 || response.status === 403) {
+                        localStorage.clear();
+                        window.location.href = '/login';
+                        reject(new Error('Authentication Failed'));
+                        return;
+                    }
+                    resolve(response);
+                }).catch(error => {
+                    reject(error);
+                });
+            });
+        };
+    </script>
+</head>
+<body>
+    <script>document.body.classList.add('js-loading');</script>
+    <div class="container">
+        <div class="header">
+            <h1>图床管理后台</h1>
+            <div class="header-actions">
+                <a href="/" target="_blank">📷 返回主页</a>
+                <a href="#" onclick="logout()">🚪 退出登录</a>
+            </div>
+        </div>
+        <div class="tabs">
+            <button class="tab" onclick="showSection('overview')">📊 概览</button>
+            <button class="tab" onclick="showSection('images')">🖼️ 图片管理</button>
+            <button class="tab" onclick="showSection('tasks')">⚙️ 批量任务</button>
+            <button class="tab" onclick="showSection('backends')">💾 存储后端</button>
+            <button class="tab" onclick="showSection('settings')">⚡ 系统设置</button>
+            <button class="tab" onclick="showSection('users')">👥 用户管理</button>
+        </div>
+        <div class="content">
+            <div id="overview" class="section"></div>
+            <div id="images" class="section"></div>
+            <div id="tasks" class="section"></div>
+            <div id="backends" class="section"></div>
+            <div id="settings" class="section"></div>
+            <div id="users" class="section"></div>
+        </div>
+    </div>
+    <div class="modal" id="addBackendModal"></div>
+    <div class="modal" id="addUserModal"></div>
+    <div class="modal" id="changePasswordModal"></div>
+    <div class="modal" id="createAPITokenModal"></div>
+    <div class="modal" id="batchBackfillModal"></div>
+    
+    <script>
+    // [JavaScript代码保持不变，与原文件相同]
+    let currentPage = 1;
+    let selectedImages = new Set();
+    let currentEditingBackendId = null;
+    
+    document.addEventListener('DOMContentLoaded', async () => {
+        try {
+            const userInfoRes = await fetch('/api/user/info');
+            if (userInfoRes.ok) {
+                const userInfo = await userInfoRes.json();
+                localStorage.setItem('user_id', userInfo.user_id);
+                localStorage.setItem('user_role', userInfo.role);
+            } else {
+                logout();
+                return;
+            }
+            const lastTab = localStorage.getItem('activeAdminTab') || 'overview';
+            showSection(lastTab);
+        } catch (error) {
+            console.error("Initialization failed:", error);
+            logout();
+        } finally {
+            document.body.classList.remove('js-loading');
+        }
+    });
+    
+    function showSection(sectionId) {
+        localStorage.setItem('activeAdminTab', sectionId);
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+        const tabButton = document.querySelector(`.tab[onclick="showSection('${sectionId}')"]`);
+        if (tabButton) tabButton.classList.add('active');
+        const section = document.getElementById(sectionId);
+        if (section) {
+            section.classList.add('active');
+            switch (sectionId) {
+                case 'overview': loadOverview(); break;
+                case 'images': loadImages(1); break;
+                case 'tasks': loadTasks(); break;
+                case 'backends': loadBackends(); break;
+                case 'settings': loadSettings(); break;
+                case 'users': loadUsers(); break;
+            }
+        }
+    }
+    
+    async function loadOverview() {
+        const section = document.getElementById('overview');
+        section.innerHTML = `
+            <div class="stats-grid">
+                <div class="stat-card"><div class="stat-value" id="totalImages">...</div><div class="stat-label">总图片数</div></div>
+                <div class="stat-card"><div class="stat-value" id="totalSize">...</div><div class="stat-label">总占用空间</div></div>
+                <div class="stat-card"><div class="stat-value" id="totalBackends">...</div><div class="stat-label">存储后端</div></div>
+                <div class="stat-card"><div class="stat-value" id="todayUploads">...</div><div class="stat-label">今日上传</div></div>
+            </div>
+            <h3 style="margin-bottom: 15px;">最近上传</h3>
+            <div class="image-grid" id="recentImages">加载中...</div>`;
+        const stats = await (await fetch('/api/stats')).json();
+        document.getElementById('totalImages').textContent = stats.totalImages;
+        document.getElementById('totalSize').textContent = formatSize(stats.totalSize);
+        document.getElementById('totalBackends').textContent = stats.totalBackends;
+        document.getElementById('todayUploads').textContent = stats.todayUploads;
+        const recentData = await (await fetch('/api/images/recent')).json();
+        const recentGrid = document.getElementById('recentImages');
+        recentGrid.innerHTML = '';
+        if (recentData && recentData.length > 0) {
+            recentData.forEach(img => {
+                const item = document.createElement('div');
+                item.className = 'image-item';
+                item.innerHTML = `<img src="/i/${img.UUID}" alt="${img.OriginalFilename}"><div class="image-info">${img.OriginalFilename}</div>`;
+                recentGrid.appendChild(item);
+            });
+        } else {
+            recentGrid.innerHTML = '<p>暂无图片</p>';
+        }
+    }
+    
+    async function loadImages(page = 1) {
+        currentPage = page;
+        const section = document.getElementById('images');
+        
+        const imagesList = section.querySelector('#imagesList');
+        const keywordInput = section.querySelector('#imageSearchInput');
+        if (!imagesList) {
+            section.innerHTML = `
+                <div id="batchActionBar" style="margin-bottom: 15px;">
+                    <span>已选中 <strong id="selectionCount">0</strong> 张图片</span>
+                    <button class="btn btn-danger" onclick="handleBatchDelete()">批量删除</button>
+                    <button class="btn btn-primary" onclick="handleBatchBackfill()">批量补传</button>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <input id="imageSearchInput" type="text" placeholder="搜索图片..." style="width: 300px; display: inline-block;">
+                    <button class="btn btn-primary" onclick="searchImages()">搜索</button>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th><input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)"></th>
+                            <th>预览</th><th>文件名</th><th>尺寸</th><th>大小</th><th>上传时间</th><th>状态</th><th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="imagesList"></tbody>
+                </table>
+                <div id="paginationControls" class="pagination-controls"></div>`;
+            loadImages(page);
+            return;
+        }
+        const keyword = keywordInput ? keywordInput.value.trim() : '';
+        imagesList.innerHTML = `<tr><td colspan="8">加载中...</td></tr>`;
+        const data = await (await fetch(`/api/images?page=${page}&pageSize=10&keyword=${encodeURIComponent(keyword)}`)).json();
+        
+        imagesList.innerHTML = '';
+        if (!data.images || data.images.length === 0) {
+            imagesList.innerHTML = `<tr><td colspan="8">暂无图片</td></tr>`;
+            renderPagination(0, page, 10);
+            return;
+        }
+        data.images.forEach(image => {
+            const tr = document.createElement('tr');
+            const isActive = image.StorageLocations?.some(loc => loc.IsActive);
+            const statusBadge = `<span class="status-badge status-${isActive ? 'active' : 'failed'}">${isActive ? '正常' : '失效'}</span>`;
+            const dimensions = (image.Width > 0 && image.Height > 0) ? `${image.Width}x${image.Height}` : 'N/A';
+            tr.innerHTML = `
+                <td><input type="checkbox" class="image-checkbox" data-uuid="${image.UUID}" onchange="updateSelection()"></td>
+                <td><img src="/i/${image.UUID}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 8px;"></td>
+                <td>${image.OriginalFilename || 'N/A'}</td>
+                <td>${dimensions}</td>
+                <td>${formatSize(image.FileSize)}</td>
+                <td>${new Date(image.CreatedAt).toLocaleString()}</td>
+                <td>${statusBadge}</td>
+                <td>
+                    <button class="btn btn-primary btn-small" onclick="window.open('/admin/images/${image.UUID}', '_blank')">查看</button>
+                    <button class="btn btn-primary btn-small" onclick="copyLink('${window.location.origin}/i/${image.UUID}')">复制</button>
+                    <button class="btn btn-danger btn-small" onclick="deleteImage('${image.UUID}')">删除</button>
+                </td>`;
+            tr.querySelector('.image-checkbox').checked = selectedImages.has(image.UUID);
+            imagesList.appendChild(tr);
+        });
+        renderPagination(data.total, data.page, data.pageSize);
+        updateSelection();
+    }
+    
+    async function loadTasks() {
+        const section = document.getElementById('tasks');
+        section.innerHTML = `<h3>进行中的批量任务</h3>
+            <table>
+                <thead><tr><th>任务ID</th><th>类型</th><th>状态</th><th>进度</th><th>创建时间</th></tr></thead>
+                <tbody id="tasksList"><tr><td colspan="5">加载中...</td></tr></tbody>
+            </table>`;
+        const res = await fetch('/api/admin/tasks');
+        const tasks = res.ok ? await res.json() : [];
+        const tasksList = document.getElementById('tasksList');
+        tasksList.innerHTML = '';
+        if (tasks && tasks.length > 0) {
+            tasks.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+            tasks.forEach(task => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${task.id.substring(0,8)}...</td><td>${task.type}</td><td>${task.status}</td><td>${task.progress}/${task.total}</td><td>${new Date(task.created_at).toLocaleString()}</td>`;
+                tasksList.appendChild(tr);
+            });
+        } else {
+            tasksList.innerHTML = '<tr><td colspan="5">暂无任务</td></tr>';
+        }
+    }
+    
+    async function loadBackends() {
+        const section = document.getElementById('backends');
+        section.innerHTML = `
+            <div style="margin-bottom: 15px;">
+                <button class="btn btn-success" onclick="showAddBackendModal()">添加后端</button>
+            </div>
+            <table>
+                <thead><tr><th>名称</th><th>类型</th><th>优先级</th><th>允许上传</th><th>允许跳转</th><th>创建时间</th><th>操作</th></tr></thead>
+                <tbody id="backendsList"></tbody>
+            </table>`;
+        
+        const backends = await (await fetch('/api/admin/backends/all')).json();
+        const backendsList = section.querySelector('#backendsList');
+        backendsList.innerHTML = '';
+        backends.forEach(backend => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${backend.Name}</td>
+                <td>${backend.Type}</td>
+                <td>${backend.Priority}</td>
+                <td><span class="status-badge status-${backend.AllowUpload ? 'active' : 'failed'}">${backend.AllowUpload ? '启用' : '禁用'}</span></td>
+                <td><span class="status-badge status-${backend.AllowRedirect ? 'active' : 'failed'}">${backend.AllowRedirect ? '启用' : '禁用'}</span></td>
+                <td>${new Date(backend.CreatedAt).toLocaleString()}</td>
+                <td>
+                    <button class="btn btn-primary btn-small" onclick="showAddBackendModal(${backend.ID})">编辑</button>
+                    <button class="btn btn-small ${backend.AllowUpload ? 'btn-danger' : 'btn-success'}" onclick="toggleBackend(${backend.ID}, 'upload')">${backend.AllowUpload ? '禁用上传' : '启用上传'}</button>
+                    <button class="btn btn-small ${backend.AllowRedirect ? 'btn-danger' : 'btn-success'}" onclick="toggleBackend(${backend.ID}, 'redirect')">${backend.AllowRedirect ? '禁用跳转' : '启用跳转'}</button>
+                    <button class="btn btn-danger btn-small" onclick="deleteBackend(${backend.ID})">删除</button>
+                </td>`;
+            backendsList.appendChild(tr);
+        });
+    }
+    async function loadSettings() {
+        const section = document.getElementById('settings');
+        section.innerHTML = '加载中...';
+        const settings = await (await fetch('/api/settings')).json();
+        section.innerHTML = `
+            <div class="form-group">
+                <label class="form-label">访问策略</label>
+                <select id="settingAccessPolicy" class="form-control" style="width: 300px;"><option value="random">随机</option><option value="priority">优先级</option></select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">失败重试次数</label>
+                <input id="settingRetryCount" type="number" class="form-control" style="width: 300px;">
+            </div>
+            <div class="form-group">
+                <label class="form-label">最大上传(MB)</label>
+                <input id="settingMaxUpload" type="number" class="form-control" style="width: 300px;">
+            </div>
+            <button class="btn btn-primary" onclick="saveSettings()">保存设置</button>`;
+        
+        document.getElementById('settingAccessPolicy').value = settings.access_policy;
+        document.getElementById('settingRetryCount').value = settings.retry_count;
+        document.getElementById('settingMaxUpload').value = settings.max_upload_mb;
+    }
+    async function loadUsers() {
+        const section = document.getElementById('users');
+        section.innerHTML = `
+            <div style="margin-bottom: 15px;">
+                <button class="btn btn-success" onclick="showAddUserModal()">添加用户</button>
+                <button class="btn btn-primary" onclick="showChangePasswordModal()">修改我的密码</button>
+            </div>
+            <table>
+                <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>创建时间</th><th>操作</th></tr></thead>
+                <tbody id="usersList"></tbody>
+            </table>
+            <h3 style="margin-top: 30px; margin-bottom: 15px;">我的API Token</h3>
+            <div style="margin-bottom: 15px;">
+                <button class="btn btn-success" onclick="showCreateAPITokenModal()">创建新Token</button>
+            </div>
+            <table>
+                <thead><tr><th>名称</th><th>Token值</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+                <tbody id="apiTokensList"></tbody>
+            </table>`;
+        
+        const users = await (await fetch('/api/admin/users')).json();
+        const usersList = section.querySelector('#usersList');
+        usersList.innerHTML = '';
+        const currentUserID = parseInt(localStorage.getItem('user_id'));
+        users.forEach(user => {
+            const tr = document.createElement('tr');
+            let actions = `<button class="btn btn-primary btn-small" onclick="resetUserPassword(${user.ID})">重置密码</button>`;
+            if (user.ID !== currentUserID) {
+                actions += ` <button class="btn btn-danger btn-small" onclick="deleteUser(${user.ID})">删除</button>`;
+            }
+            tr.innerHTML = `<td>${user.ID}</td><td>${user.Username}</td><td>${user.Role}</td><td>${new Date(user.CreatedAt).toLocaleString()}</td><td>${actions}</td>`;
+            usersList.appendChild(tr);
+        });
+        loadAPITokens();
+    }
+    
+    function searchImages() { loadImages(1); }
+    function renderPagination(total, page, pageSize) {
+        const controls = document.getElementById('paginationControls');
+        if (!controls) return;
+        controls.innerHTML = '';
+        const totalPages = Math.ceil(total / pageSize);
+        if (totalPages <= 1) return;
+        for (let i = 1; i <= totalPages; i++) {
+            const btn = document.createElement('button');
+            btn.textContent = i;
+            btn.className = `btn ${i === page ? 'btn-primary' : 'btn-secondary'}`;
+            btn.onclick = () => loadImages(i);
+            controls.appendChild(btn);
+        }
+    }
+    function toggleSelectAll(checked) {
+        document.querySelectorAll('.image-checkbox').forEach(cb => cb.checked = checked);
+        updateSelection();
+    }
+    function updateSelection() {
+        document.querySelectorAll('.image-checkbox').forEach(cb => {
+            if (cb.checked) selectedImages.add(cb.dataset.uuid);
+            else selectedImages.delete(cb.dataset.uuid);
+        });
+        const countSpan = document.getElementById('selectionCount');
+        if (countSpan) countSpan.textContent = selectedImages.size;
+        const allPageCheckboxes = document.querySelectorAll('.image-checkbox');
+        const allPageSelected = allPageCheckboxes.length > 0 && Array.from(allPageCheckboxes).every(cb => cb.checked);
+        const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+        if (selectAllCheckbox) selectAllCheckbox.checked = allPageSelected;
+    }
+    async function handleBatchDelete() {
+        if (selectedImages.size === 0) { alert("请至少选择一张图片。"); return; }
+        if (!confirm(`确定删除选中的 ${selectedImages.size} 张图片吗?`)) return;
+        const res = await fetch('/api/admin/images/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'delete', image_uuids: Array.from(selectedImages) })
+        });
+        if (res.ok) {
+            beautifulAlert.alert('批量删除任务已开始','success');
+            selectedImages.clear();
+            loadImages(currentPage);
+            showSection('tasks');
+        } else { beautifulAlert.alert('批量删除失败', 'error'); }
+    }
+    async function handleBatchBackfill() {
+        if (selectedImages.size === 0) {
+            beautifulAlert.alert("请至少选择一张图片。", "warning");
+            return;
+        }
+        
+        const backends = await (await fetch('/api/admin/backends/all')).json();
+        if (!backends || backends.length === 0) {
+            beautifulAlert.alert("没有可用的存储后端。", 'error');
+            return;
+        }
+        const options = backends.map(b => `<option value="${b.ID}">${b.Name} (${b.Type})</option>`).join('');
+        showModal('batchBackfillModal', `
+            <div class="modal-header"><h2 class="modal-title">批量补传</h2></div>
+            <div class="form-group">
+                <label>选择要补传到的目标后端:</label>
+                <select id="backendSelect" class="form-control">${options}</select>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn" onclick="closeModal('batchBackfillModal')">取消</button>
+                <button type="button" class="btn btn-primary" onclick="confirmBackfill()">开始补传</button>
+            </div>
+        `);
+    }
+    async function confirmBackfill() {
+        const backendId = document.getElementById('backendSelect').value;
+        if (!backendId) {
+            beautifulAlert.alert("请选择一个后端。", "warning");
+            return;
+        }
+        const res = await fetch('/api/admin/images/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'backfill',
+                image_uuids: Array.from(selectedImages),
+                backend_id: parseInt(backendId)
+            })
+        });
+        if (res.ok) {
+            beautifulAlert.alert('批量补传任务已开始。', 'info');
+            closeModal('batchBackfillModal');
+            selectedImages.clear();
+            loadImages(currentPage);
+            showSection('tasks');
+        } else {
+            const err = await res.json();
+            beautifulAlert.alert('任务开始失败: ' + (err.error || '未知错误'), 'error');
+        }
+    }
+    function copyLink(link) { navigator.clipboard.writeText(link).then(() => beautifulAlert.toast('链接已复制!', 'success')); }
+    async function deleteImage(uuid) {
+        if (!confirm('确定删除这张图片吗？')) return;
+        await fetch(`/api/images/${uuid}`, { method: 'DELETE' });
+        selectedImages.delete(uuid);
+        loadImages(currentPage);
+    }
+    function formatSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024, sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+    }
+    function logout() { localStorage.clear(); window.location.href = '/login'; }
+    
+    async function saveSettings() {
+        const payload = {
+            access_policy: document.getElementById('settingAccessPolicy').value,
+            retry_count: document.getElementById('settingRetryCount').value,
+            max_upload_mb: document.getElementById('settingMaxUpload').value
+        };
+        const res = await fetch('/api/admin/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        if (res.ok) beautifulAlert.toast('设置保存成功!', 'success');
+        else beautifulAlert.alert('保存失败!', 'error');
+    }
+    async function loadAPITokens() {
+        const tokens = await (await fetch('/api/user/tokens')).json();
+        const apiTokensList = document.getElementById('apiTokensList');
+        apiTokensList.innerHTML = '';
+        if (tokens && tokens.length > 0) {
+            tokens.forEach(token => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${token.Name}</td>
+                    <td><code>${token.Token}</code></td>
+                    <td><span class="status-badge status-${token.IsActive ? 'active' : 'failed'}">${token.IsActive ? '启用' : '禁用'}</span></td>
+                    <td>${new Date(token.CreatedAt).toLocaleString()}</td>
+                    <td>
+                        <button class="btn btn-small ${token.IsActive ? 'btn-danger' : 'btn-success'}" onclick="toggleAPITokenStatus(${token.ID})">${token.IsActive ? '禁用' : '启用'}</button>
+                        <button class="btn btn-danger btn-small" onclick="deleteAPIToken(${token.ID})">删除</button>
+                    </td>`;
+                apiTokensList.appendChild(tr);
+            });
+        } else {
+            apiTokensList.innerHTML = '<tr><td colspan="5">暂无API Token</td></tr>';
+        }
+    }
+    
+    async function deleteBackend(id) {
+        if (!confirm('确定删除此后端吗?')) return;
+        const res = await fetch(`/api/admin/backends/${id}`, {method: 'DELETE'});
+        if(!res.ok) {
+            const err = await res.json();
+            beautifulAlert.alert('删除失败: ' + (err.error || '未知错误'), 'error');
+        }
+        loadBackends();
+    }
+    async function toggleBackend(id, flag) {
+        if (!flag) {
+            console.error("Toggle flag is missing!");
+            return;
+        }
+        await fetch(`/api/admin/backends/${id}/toggle/${flag}`, {method: 'POST'});
+        loadBackends();
+    }
+    async function deleteUser(id) {
+        if (!confirm('确定删除此用户吗?')) return;
+        await fetch(`/api/admin/users/${id}`, {method: 'DELETE'});
+        loadUsers();
+    }
+    async function resetUserPassword(id) {
+        const newPassword = prompt('请输入新密码:');
+        if (!newPassword) return;
+        const res = await fetch(`/api/admin/users/${id}/reset-password`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({new_password: newPassword})
+        });
+        if (res.ok) beautifulAlert.toast('密码重置成功!', 'success');
+        else beautifulAlertalert('重置失败!', 'error');
+    }
+    async function deleteAPIToken(id) {
+        if (!confirm('确定删除此Token吗?')) return;
+        await fetch(`/api/user/tokens/${id}`, {method: 'DELETE'});
+        loadAPITokens();
+    }
+    async function toggleAPITokenStatus(id) {
+        await fetch(`/api/user/tokens/${id}/toggle`, {method: 'POST'});
+        loadAPITokens();
+    }
+    
+    function closeModal(modalId) { 
+        const modal = document.getElementById(modalId);
+        if (modal) {
+            modal.classList.remove('active');
+            modal.innerHTML = ''; 
+        }
+    }
+    async function showModal(id, content) {
+        const modal = document.getElementById(id);
+        if (!modal) return;
+        
+        modal.innerHTML = `<div class="modal-content">${content}</div>`;
+        modal.classList.add('active');
+        
+        const form = modal.querySelector('form');
+        if (form) {
+            const newForm = form.cloneNode(true);
+            form.parentNode.replaceChild(newForm, form);
+            
+            newForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                try {
+                    const formData = new FormData(e.target);
+                    const payload = Object.fromEntries(formData.entries());
+                    
+                    let url = e.target.action;
+                    let method = e.target.method;
+                    
+                    if (id === 'addBackendModal' && currentEditingBackendId) {
+                        url = `/api/admin/backends/${currentEditingBackendId}`;
+                        method = 'PUT';
+                    }
+                    
+                    if (id === 'addBackendModal') {
+                        const config = {};
+                        modal.querySelectorAll('#configFields .form-control').forEach(input => {
+                            config[input.name] = input.value;
+                        });
+                        
+                        payload.Name = payload.name;
+                        payload.Type = payload.type;
+                        payload.Priority = parseInt(payload.priority || 1);
+                        payload.Config = config;
+                        
+                        delete payload.name;
+                        delete payload.type;
+                        delete payload.priority;
+                    }
+                    
+                    const res = await fetch(url, {
+                        method: method.toUpperCase(),
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    if (res.ok) {
+                        beautifulAlert.alert('操作成功!', 'success');
+                        closeModal(id);
+                        
+                        if (id === 'addUserModal' || id === 'changePasswordModal') loadUsers();
+                        if (id === 'createAPITokenModal') loadAPITokens();
+                        if (id === 'addBackendModal') loadBackends();
+                    } else {
+                        const err = await res.json();
+                        beautifulAlert.alert('操作失败: ' + (err.error || '未知服务器错误'), 'error');
+                    }
+                } catch (error) {
+                    console.error('Submit error:', error);
+                    beautifulAlert.alert('请求发送失败，请检查网络连接。', 'error');
+                }
+                
+                return false;
+            });
+        }
+    }
+    function showAddUserModal() {
+        showModal('addUserModal', `
+            <div class="modal-header"><h2 class="modal-title">添加用户</h2></div>
+            <form action="/api/admin/users" method="post">
+                <div class="form-group"><label>用户名</label><input type="text" class="form-control" name="username" required></div>
+                <div class="form-group"><label>密码</label><input type="password" class="form-control" name="password" required></div>
+                <div class="form-group"><label>角色</label><select class="form-control" name="role"><option value="user">用户</option><option value="admin">管理员</option></select></div>
+                <div class="modal-footer"><button type="button" class="btn" onclick="closeModal('addUserModal')">取消</button><button type="submit" class="btn btn-primary">添加</button></div>
+            </form>`);
+    }
+    function showChangePasswordModal() {
+        showModal('changePasswordModal', `
+            <div class="modal-header"><h2 class="modal-title">修改我的密码</h2></div>
+            <form action="/api/user/change-password" method="post">
+                <div class="form-group"><label>旧密码</label><input type="password" class="form-control" name="old_password" required></div>
+                <div class="form-group"><label>新密码</label><input type="password" class="form-control" name="new_password" required></div>
+                <div class="modal-footer"><button type="button" class="btn" onclick="closeModal('changePasswordModal')">取消</button><button type="submit" class="btn btn-primary">修改</button></div>
+            </form>`);
+    }
+    function showCreateAPITokenModal() {
+        showModal('createAPITokenModal', `
+            <div class="modal-header"><h2 class="modal-title">创建API Token</h2></div>
+            <form action="/api/user/tokens" method="post">
+                <div class="form-group"><label>Token名称</label><input type="text" class="form-control" name="name" required></div>
+                <div class="modal-footer"><button type="button" class="btn" onclick="closeModal('createAPITokenModal')">取消</button><button type="submit" class="btn btn-primary">创建</button></div>
+            </form>`);
+    }
+    async function showAddBackendModal(id = null) {
+        currentEditingBackendId = id;
+        
+        let content = `
+            <div class="modal-header"><h2 class="modal-title">${id ? '编辑' : '添加'}后端</h2></div>
+            <form action="/api/admin/backends" method="post">
+                <div class="form-group"><label>名称</label><input type="text" class="form-control" name="name" required></div>
+                <div class="form-group"><label>类型</label><select class="form-control" name="type" onchange="updateConfigFields(this.value)"><option value="local">本地</option><option value="sm.ms">SM.MS</option></select></div>
+                <div class="form-group"><label>优先级</label><input type="number" class="form-control" name="priority" value="1" required></div>
+                <div id="configFields"></div>
+                <div id="smmsValidationArea" style="display: none; margin-top: 15px; text-align: right;">
+                    <button type="button" class="btn btn-primary" onclick="validateSmmsConnection()">验证连接</button>
+                    <span id="smmsValidationResult" style="margin-left: 10px;"></span>
+                </div>
+                <div class="modal-footer"><button type="button" class="btn" onclick="closeModal('addBackendModal')">取消</button><button type="submit" class="btn btn-primary">保存</button></div>
+            </form>`;
+        
+        await showModal('addBackendModal', content);
+        
+        if (id) {
+            const backends = await (await fetch('/api/admin/backends/all')).json();
+            const backend = backends.find(b => b.ID === id);
+            if (backend) {
+                const modal = document.getElementById('addBackendModal');
+                modal.querySelector('[name="name"]').value = backend.Name;
+                modal.querySelector('[name="type"]').value = backend.Type;
+                modal.querySelector('[name="priority"]').value = backend.Priority;
+                updateConfigFields(backend.Type, backend.Config);
+            }
+        } else {
+            updateConfigFields('local', {});
+        }
+    }
+    function updateConfigFields(type, config = {}) {
+        const container = document.getElementById('configFields');
+        const smmsArea = document.getElementById('smmsValidationArea');
+        smmsArea.style.display = 'none';
+        if (type === 'local') {
+            container.innerHTML = `
+                <div class="form-group"><label>存储路径</label><input class="form-control" name="storagePath" value="${config.storagePath || 'uploads'}"></div>
+                <div class="form-group"><label>访问URL前缀</label><input class="form-control" name="publicUrl" value="${config.publicUrl || 'http://127.0.0.1:8080'}"></div>`;
+        } else if (type === 'sm.ms') {
+            smmsArea.style.display = 'block';
+            container.innerHTML = `
+                <div class="form-group"><label>API URL</label><input class="form-control" name="baseURL" value="${config.baseURL || 'https://smms.app/api/v2/'}"></div>
+                <div class="form-group"><label>API Token</label><input type="password" class="form-control" name="token" value="${config.token || ''}"></div>`;
+        }
+    }
+    async function validateSmmsConnection() {
+        const modal = document.getElementById('addBackendModal');
+        const baseURL = modal.querySelector('[name="baseURL"]').value;
+        const token = modal.querySelector('[name="token"]').value;
+        const resultSpan = document.getElementById('smmsValidationResult');
+        resultSpan.textContent = '验证中...';
+        const res = await fetch('/api/admin/backends/smms/validate-token', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ baseURL, token })
+        });
+        const result = await res.json();
+        resultSpan.textContent = result.message;
+        resultSpan.style.color = result.success ? 'green' : 'red';
+    }
+    </script>
+</body>
+</html>
