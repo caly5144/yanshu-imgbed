@@ -1,6 +1,9 @@
 package router
 
 import (
+	"embed"
+	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
 	"yanshu-imgbed/api"
@@ -13,7 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter(storageManager *manager.StorageManager) *gin.Engine {
+func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, staticFS embed.FS) *gin.Engine {
 
 	if config.Cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
@@ -27,22 +30,29 @@ func SetupRouter(storageManager *manager.StorageManager) *gin.Engine {
 	r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
 	apiHandlers := api.NewAPIHandlers(storageManager)
 
-	r.LoadHTMLGlob("templates/*")
-	r.Static("/static", "./static")
+	// 从传入的参数加载模板和静态文件
+	// 加载HTML模板
+	templ := template.Must(template.ParseFS(templatesFS, "templates/*.html"))
+	r.SetHTMLTemplate(templ)
+
+	// 加载静态文件
+	subStaticFS, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		log.Fatalf("Failed to create sub filesystem for static files: %v", err)
+	}
+	r.StaticFS("/static", http.FS(subStaticFS))
+
+	// 注意：/uploads 目录依然使用 r.Static，因为它是在运行时创建的，不应被嵌入
 	r.Static("/uploads", "./uploads")
 
 	// --- 页面路由 ---
-	// 页面路由应该是公开的，让前端JS来处理认证状态
 	r.GET("/login", func(c *gin.Context) {
 		c.HTML(http.StatusOK, "login.html", nil)
 	})
 	r.GET("/", func(c *gin.Context) {
 		var backends []database.Backend
-		// 直接在这里查询数据
 		database.DB.Where("allow_upload = ?", true).Order("priority asc").Find(&backends)
 		maxUploadMB := service.GetMaxUploadMB()
-
-		// 将查询到的数据传递给模板
 		c.HTML(http.StatusOK, "index.html", gin.H{
 			"Backends":    backends,
 			"MaxUploadMB": maxUploadMB,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"embed"
 	"fmt"
 	"log"
 	"yanshu-imgbed/config"
@@ -9,6 +10,12 @@ import (
 	"yanshu-imgbed/router"
 	"yanshu-imgbed/service"
 )
+
+//go:embed templates/*
+var templatesFS embed.FS
+
+//go:embed static/*
+var staticFS embed.FS
 
 func main() {
 	// 1. 初始化配置
@@ -30,8 +37,8 @@ func main() {
 		log.Fatalf("Failed to initialize storage manager: %v", err)
 	}
 
-	// 5. 设置并运行路由 (注入管理器)
-	r := router.SetupRouter(storageManager)
+	// 5. 设置并运行路由 (注入管理器和嵌入的资源)
+	r := router.SetupRouter(storageManager, templatesFS, staticFS)
 
 	serverAddr := fmt.Sprintf(":%s", config.Cfg.Server.Port)
 	log.Printf("Server is running on http://127.0.0.1%s", serverAddr)
