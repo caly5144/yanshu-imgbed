@@ -3,23 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="static/js/toast.js" defer></script>
+    <script src="/static/js/toast.js" defer></script>
     <title>图片详情</title>
     <link rel="stylesheet" href="/static/css/image_detail.css">
     <script>
-        // 认证检查
         (function() {
-            if (!localStorage.getItem('jwt_token')) {
-                window.location.href = '/login';
-            }
+            if (!localStorage.getItem('jwt_token')) { window.location.href = '/login'; }
             const originalFetch = window.fetch;
             window.fetch = function(url, options) {
-                options = options || {}; 
-                options.headers = options.headers || {};
+                options = options || {}; options.headers = options.headers || {};
                 const token = localStorage.getItem('jwt_token');
-                if (token) { 
-                    options.headers['Authorization'] = `Bearer ${token}`; 
-                }
+                if (token) { options.headers['Authorization'] = `Bearer ${token}`; }
                 return originalFetch(url, options).then(response => {
                     if (response.status === 401 || response.status === 403) {
                         localStorage.clear();
@@ -33,9 +27,7 @@
 </head>
 <body>
     <div class="breadcrumb">
-        <a href="/admin">后台管理</a>
-        <span>›</span>
-        <a href="#" onclick="history.back()">图片管理</a>
+        <a href="/admin" target="_blank">后台管理</a>
         <span>›</span>
         <span>图片详情</span>
     </div>
@@ -71,18 +63,34 @@
                     </div>
                 </div>
             </div>
+
+            <!-- --- HTML 结构修正 --- -->
             <div class="info-bottom" id="statusArea">
                 <h4 style="margin-bottom: 16px; color: var(--text-primary);">后端状态</h4>
-                <div class="status-item">
-                    <strong>当前状态</strong>
-                    <span id="locationStatus"></span>
-                </div>
-                <div class="status-item">
-                    <strong>失败次数</strong>
-                    <span id="failureCount" style="font-weight: 600;"></span>
+                <div class="status-items-wrapper">
+                    <div class="status-item">
+                        <strong>当前状态</strong>
+                        <span id="locationStatus"></span>
+                    </div>
+                    <div class="status-item">
+                        <strong>失败次数</strong>
+                        <span id="failureCount" style="font-weight: 600;"></span>
+                    </div>
                 </div>
                 <button id="toggleStatusBtn" class="btn"></button>
             </div>
+            <div class="info-bottom" id="randomArea" style="display: none;">
+                <h4 style="margin-bottom: 16px; color: var(--text-primary);">随机图库</h4>
+                <div class="status-items-wrapper">
+                    <div class="status-item">
+                        <strong>当前状态</strong>
+                        <span id="randomStatus"></span>
+                    </div>
+                </div>
+                <button id="toggleRandomBtn" class="btn"></button>
+            </div>
+            <!-- --- HTML 结构修正结束 --- -->
+
         </div>
     </div>
 
@@ -101,7 +109,7 @@
             document.getElementById('imagePreview').src = `/i/${uuid}`;
             const response = await fetch(`/api/admin/images/${uuid}`);
             if (!response.ok) {
-                beautifulAlert.alert('Failed to load image details', 'error');
+                beautifulAlert.alert('加载图片详情失败', 'error');
                 return;
             }
             imageData = await response.json();
@@ -118,6 +126,8 @@
             });
             tabsContainer.innerHTML = tabsHtml;
         }
+
+        /* --- JavaScript 逻辑修正 --- */
         
         function selectTab(locationIdOrType) {
             currentTab = locationIdOrType;
@@ -131,16 +141,23 @@
         
         function updateInfoForTab() {
             const statusArea = document.getElementById('statusArea');
+            const randomArea = document.getElementById('randomArea');
+            
             let url, filename = imageData.OriginalFilename;
+            
             if (currentTab === 'distribution') {
                 url = `${window.location.origin}/i/${imageData.UUID}`;
                 statusArea.style.display = 'none';
+                randomArea.style.display = 'block';
+                updateRandomStatusUI();
             } else {
                 const loc = imageData.StorageLocations.find(l => l.ID === currentTab);
                 if (!loc) return;
                 
                 url = loc.URL;
                 statusArea.style.display = 'block';
+                randomArea.style.display = 'none';
+
                 const statusSpan = document.getElementById('locationStatus');
                 const toggleBtn = document.getElementById('toggleStatusBtn');
                 statusSpan.textContent = loc.IsActive ? '有效' : '失效';
@@ -151,9 +168,35 @@
                 toggleBtn.className = `btn ${loc.IsActive ? 'btn-danger' : 'btn-success'}`;
                 toggleBtn.onclick = () => toggleLocationStatus(loc.ID);
             }
+            
             document.getElementById('linkUrl').value = url;
             document.getElementById('linkMarkdown').value = `![${filename}](${url})`;
             document.getElementById('linkHtml').value = `<img src="${url}" alt="${filename}">`;
+        }
+
+        function updateRandomStatusUI() {
+            const randomStatusSpan = document.getElementById('randomStatus');
+            const toggleRandomBtn = document.getElementById('toggleRandomBtn');
+            
+            randomStatusSpan.textContent = imageData.AllowRandom ? '已加入' : '未加入';
+            randomStatusSpan.className = imageData.AllowRandom ? 'status-badge status-active' : 'status-badge status-failed';
+            
+            toggleRandomBtn.textContent = imageData.AllowRandom ? '移出随机图库' : '加入随机图库';
+            toggleRandomBtn.className = `btn ${imageData.AllowRandom ? 'btn-danger' : 'btn-success'}`;
+            toggleRandomBtn.onclick = () => toggleRandomStatus();
+        }
+
+        async function toggleRandomStatus() {
+            const uuid = getUuidFromPath();
+            const response = await fetch(`/api/admin/images/${uuid}/toggle-random`, { method: 'POST' });
+            if (!response.ok) {
+                beautifulAlert.alert('更新状态失败', 'error');
+                return;
+            }
+            const data = await response.json();
+            imageData.AllowRandom = data.allow_random;
+            updateRandomStatusUI();
+            beautifulAlert.toast('状态更新成功!', 'success');
         }
         
         async function toggleLocationStatus(locationId) {
@@ -161,7 +204,7 @@
                 method: 'POST'
             });
             if (!response.ok) {
-                beautifulAlert.alert('Failed to toggle status', 'error');
+                beautifulAlert.alert('更新状态失败', 'error');
                 return;
             }
             const updatedLocation = await response.json();
@@ -171,22 +214,22 @@
                 imageData.StorageLocations[index].IsActive = updatedLocation.IsActive;
             }
             updateInfoForTab();
+            beautifulAlert.toast('状态更新成功!', 'success');
         }
         
         function copyToClipboard(elementId) {
             const input = document.getElementById(elementId);
             input.select();
             document.execCommand('copy');
-            
             const btn = event.target;
             const originalText = btn.textContent;
             btn.textContent = '✓ 已复制';
-            setTimeout(() => {
-                btn.textContent = originalText;
-            }, 2000);
+            setTimeout(() => { btn.textContent = originalText; }, 2000);
         }
         
         document.addEventListener('DOMContentLoaded', loadImageDetails);
+        /* --- JavaScript 逻辑修正结束 --- */
     </script>
 </body>
 </html>
+

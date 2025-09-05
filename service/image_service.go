@@ -28,6 +28,17 @@ import (
 	"gorm.io/gorm"
 )
 
+var (
+	randomImageUUIDs []string
+	cacheMutex       sync.RWMutex
+)
+
+// Global task manager for batch jobs (in a real production app, this might be a Redis queue or similar)
+var (
+	tasks  = make(map[string]*Task)
+	taskMu sync.Mutex
+)
+
 // ListImagesResponse is the new structure for paginated image lists.
 type ListImagesResponse struct {
 	Total    int64            `json:"total"`
@@ -35,12 +46,6 @@ type ListImagesResponse struct {
 	PageSize int              `json:"pageSize"`
 	Images   []database.Image `json:"images"`
 }
-
-// Global task manager for batch jobs (in a real production app, this might be a Redis queue or similar)
-var (
-	tasks  = make(map[string]*Task)
-	taskMu sync.Mutex
-)
 
 type Task struct {
 	ID        string    `json:"id"`
@@ -52,7 +57,97 @@ type Task struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ** NEW AND CORRECTED FUNCTION **
+func InitAndStartCacheUpdater() {
+	log.Println("Initializing random image cache...")
+	if err := UpdateRandomImageCache(); err != nil {
+		log.Printf("Initial random image cache update failed: %v", err)
+	}
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			log.Println("Periodically updating random image cache...")
+			if err := UpdateRandomImageCache(); err != nil {
+				log.Printf("Periodic random image cache update failed: %v", err)
+			}
+		}
+	}()
+}
+
+// UpdateRandomImageCache 从数据库加载所有允许随机访问的图片UUID到内存
+func UpdateRandomImageCache() error {
+	var uuids []string
+	if err := database.DB.Model(&database.Image{}).Where("allow_random = ?", true).Pluck("uuid", &uuids).Error; err != nil {
+		log.Printf("Error updating random image cache: %v", err)
+		return err
+	}
+
+	cacheMutex.Lock()
+	randomImageUUIDs = uuids
+	cacheMutex.Unlock()
+
+	log.Printf("Random image cache updated. Loaded %d image UUIDs.", len(uuids))
+	return nil
+}
+
+// StartRandomImageCacheUpdater 启动一个后台任务，定期刷新随机图片缓存
+func StartRandomImageCacheUpdater() {
+	go UpdateRandomImageCache() // 程序启动时立即执行一次
+
+	ticker := time.NewTicker(5 * time.Minute) // 每5分钟刷新一次
+	go func() {
+		for range ticker.C {
+			UpdateRandomImageCache()
+		}
+	}()
+}
+
+// GetRandomImageUUID 从内存缓存中随机获取一个图片UUID
+func GetRandomImageUUID() (string, error) {
+	cacheMutex.RLock()
+	defer cacheMutex.RUnlock()
+
+	if len(randomImageUUIDs) == 0 {
+		return "", errors.New("no images available in the random pool")
+	}
+
+	rand.Seed(time.Now().UnixNano())
+	randomIndex := rand.Intn(len(randomImageUUIDs))
+	return randomImageUUIDs[randomIndex], nil
+}
+
+func BatchSetRandomStatus(imageUUIDs []string, allowRandom bool) error {
+	if len(imageUUIDs) == 0 {
+		return nil // 无操作
+	}
+	result := database.DB.Model(&database.Image{}).Where("uuid IN ?", imageUUIDs).Update("allow_random", allowRandom)
+	if result.Error != nil {
+		return fmt.Errorf("failed to batch update random status: %w", result.Error)
+	}
+	log.Printf("Batch updated allow_random to %v for %d images. Rows affected: %d", allowRandom, len(imageUUIDs), result.RowsAffected)
+	go UpdateRandomImageCache() // 异步更新缓存
+	return nil
+}
+
+// ToggleImageRandomStatus 切换图片的AllowRandom状态
+func ToggleImageRandomStatus(imageUUID string) (*database.Image, error) {
+	var image database.Image
+	if err := database.DB.Where("uuid = ?", imageUUID).First(&image).Error; err != nil {
+		return nil, err
+	}
+
+	image.AllowRandom = !image.AllowRandom
+	if err := database.DB.Save(&image).Error; err != nil {
+		return nil, err
+	}
+
+	// 状态更新后，立即异步刷新缓存，以便即时生效
+	go UpdateRandomImageCache()
+
+	return &image, nil
+}
+
 // getImageDimensions extracts width and height from an image file.
 func getImageDimensions(file *multipart.FileHeader) (int, int, error) {
 	src, err := file.Open()
@@ -74,7 +169,6 @@ func getImageDimensions(file *multipart.FileHeader) (int, int, error) {
 	return config.Width, config.Height, nil
 }
 
-// ** MODIFIED UploadImage FUNCTION **
 func UploadImage(file *multipart.FileHeader, userID uint, targetBackendIDs []uint, storageManager *manager.StorageManager) (*database.Image, error) {
 	// 1. Calculate MD5 for deduplication
 	fileMD5, err := util.CalculateFileMD5(file)
@@ -347,7 +441,6 @@ func GetHealthyStorageLocation(imageUUID string) (*database.StorageLocation, err
 		var isHealthy bool
 
 		if loc.StorageType == "local" {
-			// ... (本地文件检查逻辑保持不变) ...
 			parsedURL, err := url.Parse(loc.URL)
 			if err != nil {
 				log.Printf("[Health Check] Failed to parse local URL %s: %v", loc.URL, err)

@@ -15,6 +15,25 @@ import (
 	"gorm.io/gorm"
 )
 
+// ToggleImageRandomStatusHandler 切换图片随机状态的处理器
+func ToggleImageRandomStatusHandler(c *gin.Context) {
+	uuid := c.Param("uuid")
+	image, err := service.ToggleImageRandomStatus(uuid)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Image not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update image status"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message":      "Random status updated successfully",
+		"uuid":         image.UUID,
+		"allow_random": image.AllowRandom,
+	})
+}
+
 type BatchImageRequest struct {
 	Action     string   `json:"action" binding:"required"`
 	ImageUUIDs []string `json:"image_uuids" binding:"required"`
@@ -42,9 +61,23 @@ func (h *APIHandlers) BatchImageHandler(c *gin.Context) {
 			return
 		}
 		taskID, err = service.BatchBackfillToBackend(req.ImageUUIDs, req.BackendID, h.StorageManager)
-		// Add "delete_from_backend" case here if needed
+	// --- 新增：处理批量设置随机图库状态 ---
+	case "add_to_random":
+		err = service.BatchSetRandomStatus(req.ImageUUIDs, true)
+	case "remove_from_random":
+		err = service.BatchSetRandomStatus(req.ImageUUIDs, false)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid action"})
+		return
+	}
+
+	// --- 修改：为非任务型操作提供即时响应 ---
+	if req.Action == "add_to_random" || req.Action == "remove_from_random" {
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "Batch random status updated successfully"})
 		return
 	}
 

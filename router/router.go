@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SetupRouter 接收 embed.FS 作为参数
 func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, staticFS embed.FS) *gin.Engine {
 
 	if config.Cfg.Server.Mode == "release" {
@@ -31,18 +32,14 @@ func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, s
 	apiHandlers := api.NewAPIHandlers(storageManager)
 
 	// 从传入的参数加载模板和静态文件
-	// 加载HTML模板
 	templ := template.Must(template.ParseFS(templatesFS, "templates/*.html"))
 	r.SetHTMLTemplate(templ)
 
-	// 加载静态文件
 	subStaticFS, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		log.Fatalf("Failed to create sub filesystem for static files: %v", err)
 	}
 	r.StaticFS("/static", http.FS(subStaticFS))
-
-	// 注意：/uploads 目录依然使用 r.Static，因为它是在运行时创建的，不应被嵌入
 	r.Static("/uploads", "./uploads")
 
 	// --- 页面路由 ---
@@ -66,20 +63,19 @@ func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, s
 		c.HTML(http.StatusOK, "image_details.html", nil)
 	})
 
-	// --- 认证相关公共路由 (不需要登录即可访问) ---
 	authGroup := r.Group("/auth")
 	{
 		authGroup.POST("/login", api.LoginHandler)
 	}
 
-	// --- 图片访问路由 (公开) ---
 	r.GET("/i/:uuid", api.ServeImageHandler)
 
-	// --- API 路由 (这里才是认证保护的重点) ---
+	// --- 随机图片API路由 (公开) ---
+	r.GET("/api/random", api.GetRandomImageHandler)
+
 	r.POST("/api/upload/web", middleware.AuthMiddleware(), apiHandlers.UploadHandler)
 	r.POST("/api/upload/api", middleware.APITokenAuthMiddleware(), apiHandlers.UploadHandler)
 
-	// 需要JWT Token的API (用户自己的操作)
 	protectedApiGroup := r.Group("/api", middleware.AuthMiddleware())
 	{
 		protectedApiGroup.GET("/user/info", api.GetUserInfoHandler)
@@ -96,25 +92,25 @@ func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, s
 		protectedApiGroup.GET("/settings", api.GetSettingsHandler)
 	}
 
-	// 后台管理 API (需要JWT Token + 管理员权限)
 	adminApiGroup := r.Group("/api/admin", middleware.AuthMiddleware(), middleware.AdminAuthMiddleware())
 	{
 		adminApiGroup.GET("/backends/all", api.ListAllBackendsHandler)
 		adminApiGroup.POST("/backends", apiHandlers.CreateBackendHandler)
 		adminApiGroup.PUT("/backends/:id", apiHandlers.UpdateBackendHandler)
 		adminApiGroup.DELETE("/backends/:id", apiHandlers.DeleteBackendHandler)
-		adminApiGroup.POST("/backends/:id/toggle/:flag", apiHandlers.ToggleBackendFlagHandler) // <<<--- 新增此行
+		adminApiGroup.POST("/backends/:id/toggle/:flag", apiHandlers.ToggleBackendFlagHandler)
 		adminApiGroup.POST("/backends/smms/validate-token", api.ValidateSmmsTokenHandler)
 		adminApiGroup.POST("/settings", api.SaveSettingsHandler)
 		adminApiGroup.GET("/users", api.ListUsersHandler)
 		adminApiGroup.POST("/users", api.RegisterUserHandler)
 		adminApiGroup.POST("/users/:id/reset-password", api.ResetPasswordHandler)
 		adminApiGroup.DELETE("/users/:id", api.DeleteUserHandler)
-		adminApiGroup.POST("/images/batch", apiHandlers.BatchImageHandler) // NEW
-		adminApiGroup.GET("/tasks", api.ListTasksHandler)                  // NEW
-		// --- 新增：获取图片详情和切换状态的API ---
+		adminApiGroup.POST("/images/batch", apiHandlers.BatchImageHandler)
+		adminApiGroup.GET("/tasks", api.ListTasksHandler)
 		adminApiGroup.GET("/images/:uuid", api.GetImageDetailsHandler)
 		adminApiGroup.POST("/storagelocations/:id/toggle", api.ToggleStorageLocationStatusHandler)
+		// --- 切换图片随机状态的API ---
+		adminApiGroup.POST("/images/:uuid/toggle-random", api.ToggleImageRandomStatusHandler)
 	}
 
 	return r

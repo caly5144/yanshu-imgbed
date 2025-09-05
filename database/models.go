@@ -6,14 +6,14 @@ import (
 	"gorm.io/datatypes"
 )
 
-// CustomModel 替换 gorm.Model，不包含 DeletedAt (保持不变)
+// CustomModel 替换 gorm.Model，不包含 DeletedAt
 type CustomModel struct {
 	ID        uint `gorm:"primarykey"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
-// User 用户模型 (新增)
+// User 用户模型
 type User struct {
 	CustomModel
 	Username  string     `gorm:"type:varchar(50);uniqueIndex;not null"`
@@ -22,7 +22,7 @@ type User struct {
 	APITokens []APIToken `gorm:"foreignKey:UserID"`               // 用户拥有的API Token
 }
 
-// APIToken API Token 模型 (新增)
+// APIToken API Token 模型
 type APIToken struct {
 	CustomModel
 	UserID    uint
@@ -33,7 +33,7 @@ type APIToken struct {
 	ExpiresAt *time.Time // Token过期时间，可选
 }
 
-// Image 主表... (CustomModel 替换 gorm.Model，保持不变)
+// Image 主表
 type Image struct {
 	CustomModel
 	UUID             string `gorm:"type:varchar(36);uniqueIndex;not null"`
@@ -41,18 +41,19 @@ type Image struct {
 	OriginalFilename string `gorm:"type:varchar(255)"`
 	FileSize         int64
 	ContentType      string            `gorm:"type:varchar(50)"`
-	Width            int               `gorm:"default:0"` // NEW: Image width
-	Height           int               `gorm:"default:0"` // NEW: Image height
+	Width            int               `gorm:"default:0"`
+	Height           int               `gorm:"default:0"`
+	AllowRandom      bool              `gorm:"default:false;index"`
 	StorageLocations []StorageLocation `gorm:"foreignKey:ImageID"`
 	UserID           uint              `gorm:"index"`
 }
 
-// StorageLocation 存储位置表 (CustomModel 替换 gorm.Model，保持不变)
+// StorageLocation 存储位置表
 type StorageLocation struct {
 	CustomModel
 	ImageID          uint
 	BackendID        uint
-	Backend          Backend `gorm:"foreignKey:BackendID"` // NEW: 添加 Backend 字段用于预加载
+	Backend          Backend `gorm:"foreignKey:BackendID"`
 	StorageType      string  `gorm:"type:varchar(50);not null"`
 	URL              string  `gorm:"type:varchar(512);not null"`
 	DeleteIdentifier string  `gorm:"type:varchar(255)"`
@@ -60,7 +61,7 @@ type StorageLocation struct {
 	FailureCount     int     `gorm:"default:0"`
 }
 
-// Backend 存储后端配置表 (CustomModel 替换 gorm.Model，保持不变)
+// Backend 存储后端配置表
 type Backend struct {
 	CustomModel
 	Name          string         `gorm:"type:varchar(100);not null;unique"`
@@ -71,7 +72,7 @@ type Backend struct {
 	AllowRedirect bool           `gorm:"default:true"`
 }
 
-// Setting 系统设置表 (CustomModel 替换 gorm.Model，保持不变)
+// Setting 系统设置表
 type Setting struct {
 	CustomModel
 	Key   string `gorm:"type:varchar(100);uniqueIndex;not null"`

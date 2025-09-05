@@ -28,8 +28,13 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	// 3. --- 新增：初始化设置缓存 ---
+	// 3. 初始化设置缓存
 	service.InitSettings()
+
+	// 启动随机图片缓存服务 ---
+	if err := database.Init(config.Cfg.Database.DSN); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
 
 	// 4. 初始化存储管理器
 	storageManager, err := manager.NewStorageManager()

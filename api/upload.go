@@ -11,6 +11,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func GetRandomImageHandler(c *gin.Context) {
+	uuid, err := service.GetRandomImageUUID()
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 构造分发链接并执行302重定向
+	// 这将复用/i/:uuid的健康检查和多后端跳转逻辑
+	redirectURL := fmt.Sprintf("/i/%s", uuid)
+	c.Redirect(http.StatusFound, redirectURL)
+}
+
 func (h *APIHandlers) UploadHandler(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
