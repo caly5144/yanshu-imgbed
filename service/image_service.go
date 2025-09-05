@@ -28,17 +28,6 @@ import (
 	"gorm.io/gorm"
 )
 
-var (
-	randomImageUUIDs []string
-	cacheMutex       sync.RWMutex
-)
-
-// Global task manager for batch jobs (in a real production app, this might be a Redis queue or similar)
-var (
-	tasks  = make(map[string]*Task)
-	taskMu sync.Mutex
-)
-
 // ListImagesResponse is the new structure for paginated image lists.
 type ListImagesResponse struct {
 	Total    int64            `json:"total"`
@@ -46,6 +35,13 @@ type ListImagesResponse struct {
 	PageSize int              `json:"pageSize"`
 	Images   []database.Image `json:"images"`
 }
+
+var (
+	tasks            = make(map[string]*Task)
+	taskMu           sync.Mutex
+	randomImageUUIDs []string
+	cacheMutex       sync.RWMutex
+)
 
 type Task struct {
 	ID        string    `json:"id"`
@@ -57,83 +53,13 @@ type Task struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func InitAndStartCacheUpdater() {
-	log.Println("Initializing random image cache...")
-	if err := UpdateRandomImageCache(); err != nil {
-		log.Printf("Initial random image cache update failed: %v", err)
-	}
-
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			log.Println("Periodically updating random image cache...")
-			if err := UpdateRandomImageCache(); err != nil {
-				log.Printf("Periodic random image cache update failed: %v", err)
-			}
-		}
-	}()
-}
-
-// UpdateRandomImageCache 从数据库加载所有允许随机访问的图片UUID到内存
-func UpdateRandomImageCache() error {
-	var uuids []string
-	if err := database.DB.Model(&database.Image{}).Where("allow_random = ?", true).Pluck("uuid", &uuids).Error; err != nil {
-		log.Printf("Error updating random image cache: %v", err)
-		return err
-	}
-
-	cacheMutex.Lock()
-	randomImageUUIDs = uuids
-	cacheMutex.Unlock()
-
-	log.Printf("Random image cache updated. Loaded %d image UUIDs.", len(uuids))
-	return nil
-}
-
-// StartRandomImageCacheUpdater 启动一个后台任务，定期刷新随机图片缓存
-func StartRandomImageCacheUpdater() {
-	go UpdateRandomImageCache() // 程序启动时立即执行一次
-
-	ticker := time.NewTicker(5 * time.Minute) // 每5分钟刷新一次
-	go func() {
-		for range ticker.C {
-			UpdateRandomImageCache()
-		}
-	}()
-}
-
-// GetRandomImageUUID 从内存缓存中随机获取一个图片UUID
-func GetRandomImageUUID() (string, error) {
-	cacheMutex.RLock()
-	defer cacheMutex.RUnlock()
-
-	if len(randomImageUUIDs) == 0 {
-		return "", errors.New("no images available in the random pool")
-	}
-
-	rand.Seed(time.Now().UnixNano())
-	randomIndex := rand.Intn(len(randomImageUUIDs))
-	return randomImageUUIDs[randomIndex], nil
-}
-
-func BatchSetRandomStatus(imageUUIDs []string, allowRandom bool) error {
-	if len(imageUUIDs) == 0 {
-		return nil // 无操作
-	}
-	result := database.DB.Model(&database.Image{}).Where("uuid IN ?", imageUUIDs).Update("allow_random", allowRandom)
-	if result.Error != nil {
-		return fmt.Errorf("failed to batch update random status: %w", result.Error)
-	}
-	log.Printf("Batch updated allow_random to %v for %d images. Rows affected: %d", allowRandom, len(imageUUIDs), result.RowsAffected)
-	go UpdateRandomImageCache() // 异步更新缓存
-	return nil
-}
-
-// ToggleImageRandomStatus 切换图片的AllowRandom状态
+// ToggleImageRandomStatus toggles the AllowRandom status for a single image.
 func ToggleImageRandomStatus(imageUUID string) (*database.Image, error) {
 	var image database.Image
 	if err := database.DB.Where("uuid = ?", imageUUID).First(&image).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("image not found")
+		}
 		return nil, err
 	}
 
@@ -142,13 +68,12 @@ func ToggleImageRandomStatus(imageUUID string) (*database.Image, error) {
 		return nil, err
 	}
 
-	// 状态更新后，立即异步刷新缓存，以便即时生效
+	// Trigger cache update in the background
 	go UpdateRandomImageCache()
 
 	return &image, nil
 }
 
-// getImageDimensions extracts width and height from an image file.
 func getImageDimensions(file *multipart.FileHeader) (int, int, error) {
 	src, err := file.Open()
 	if err != nil {
@@ -156,62 +81,64 @@ func getImageDimensions(file *multipart.FileHeader) (int, int, error) {
 	}
 	defer src.Close()
 
-	// FIX: This is critical. We must seek to the beginning of the file
-	// because it might have been read before (e.g., for MD5 calculation).
 	if _, err := src.Seek(0, 0); err != nil {
 		return 0, 0, fmt.Errorf("failed to seek file start: %w", err)
 	}
 
 	config, _, err := image.DecodeConfig(src)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to decode image config: %w", err)
+		log.Printf("Could not decode image config for %s: %v. This might be an SVG or other format.", file.Filename, err)
+		return 0, 0, nil
 	}
 	return config.Width, config.Height, nil
 }
 
+// UploadImage handles the entire image upload flow, including deduplication.
 func UploadImage(file *multipart.FileHeader, userID uint, targetBackendIDs []uint, storageManager *manager.StorageManager) (*database.Image, error) {
-	// 1. Calculate MD5 for deduplication
 	fileMD5, err := util.CalculateFileMD5(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate file MD5: %w", err)
 	}
 
-	// 2. Check if an image with the same MD5 already exists
-	var existingImage database.Image
-	err = database.DB.Preload("StorageLocations.Backend").Where("md5 = ?", fileMD5).First(&existingImage).Error
+	var existingImageForUser database.Image
+	err = database.DB.Preload("StorageLocations.Backend").
+		Where("md5 = ? AND user_id = ?", fileMD5, userID).
+		First(&existingImageForUser).Error
 
-	// a) If image exists (MD5 match)
 	if err == nil {
-		log.Printf("Duplicate image detected (MD5: %s). Checking for backends to backfill.", fileMD5)
-		return handleDuplicateImage(file, &existingImage, targetBackendIDs, storageManager)
+		log.Printf("Duplicate image for user %d (MD5: %s). Backfilling.", userID, fileMD5)
+		return handleDuplicateImage(&existingImageForUser, file, targetBackendIDs, storageManager)
 	}
 
-	// b) If there's a different database error
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, fmt.Errorf("database error during MD5 check: %w", err)
+		return nil, fmt.Errorf("database error during user duplicate check: %w", err)
 	}
 
-	// c) If the image is new, now we get its dimensions
-	log.Printf("New image detected (MD5: %s). Getting dimensions.", fileMD5)
+	var existingImageForOtherUser database.Image
+	err = database.DB.Preload("StorageLocations.Backend").
+		Where("md5 = ?", fileMD5).
+		First(&existingImageForOtherUser).Error
 
-	// FIX: Actually call the function to get dimensions
-	width, height, err := getImageDimensions(file)
-	if err != nil {
-		// We can decide to fail or just log the error and continue with 0x0
-		log.Printf("Could not get image dimensions for %s: %v. Proceeding with 0x0.", file.Filename, err)
-		width = 0
-		height = 0
+	if err == nil {
+		log.Printf("Image exists from another user (MD5: %s). Creating new metadata reference for user %d.", fileMD5, userID)
+		return handleSharedImage(file, userID, fileMD5, &existingImageForOtherUser)
 	}
 
-	log.Printf("Starting new upload process for image with dimensions %dx%d.", width, height)
-	// FIX: Pass the acquired dimensions to the handler function
-	return handleNewImage(file, userID, fileMD5, width, height, targetBackendIDs, storageManager)
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("database error during global duplicate check: %w", err)
+	}
+
+	log.Printf("New image for the system (MD5: %s). Starting fresh upload for user %d.", fileMD5, userID)
+	return handleNewImage(file, userID, fileMD5, targetBackendIDs, storageManager)
 }
 
-// ** MODIFIED handleNewImage FUNCTION **
-// It now accepts width and height and saves them.
-func handleNewImage(file *multipart.FileHeader, userID uint, fileMD5 string, width, height int, targetBackendIDs []uint, storageManager *manager.StorageManager) (*database.Image, error) {
-	// 1. Determine target backends
+// handleNewImage uploads a completely new file and creates all records.
+func handleNewImage(file *multipart.FileHeader, userID uint, fileMD5 string, targetBackendIDs []uint, storageManager *manager.StorageManager) (*database.Image, error) {
+	width, height, err := getImageDimensions(file)
+	if err != nil {
+		log.Printf("Could not get image dimensions for %s: %v. Proceeding with 0x0.", file.Filename, err)
+	}
+
 	var activeBackends []database.Backend
 	query := database.DB.Where("allow_upload = ?", true)
 	if len(targetBackendIDs) > 0 {
@@ -224,41 +151,34 @@ func handleNewImage(file *multipart.FileHeader, userID uint, fileMD5 string, wid
 		return nil, errors.New("no active storage backends configured or selected")
 	}
 
-	// 2. Create image metadata record, now including dimensions
-	imageUUID := uuid.New().String()
 	image := &database.Image{
-		UUID:             imageUUID,
+		UUID:             uuid.New().String(),
 		MD5:              fileMD5,
 		OriginalFilename: file.Filename,
 		FileSize:         file.Size,
 		ContentType:      file.Header.Get("Content-Type"),
-		Width:            width,  // Save width
-		Height:           height, // Save height
+		Width:            width,
+		Height:           height,
 		UserID:           userID,
 	}
 	if err := database.DB.Create(&image).Error; err != nil {
-		return nil, fmt.Errorf("failed to create image record in database: %w", err)
+		return nil, fmt.Errorf("failed to create image record: %w", err)
 	}
 
-	// 3. Distribute the file to backends
-	uniqueFilename := fmt.Sprintf("%s%s", imageUUID, filepath.Ext(file.Filename))
+	uniqueFilename := fmt.Sprintf("%s%s", image.UUID, filepath.Ext(file.Filename))
 	distributeToBackends(file, uniqueFilename, image.ID, activeBackends, storageManager)
 
-	// 4. Reload image info and return the result
 	database.DB.Preload("StorageLocations.Backend").First(&image, image.ID)
 	if len(image.StorageLocations) == 0 {
-		database.DB.Delete(&image) // Rollback if all uploads failed
+		database.DB.Delete(&image)
 		return nil, errors.New("upload failed on all active backends")
 	}
 
 	return image, nil
 }
 
-// --- NO CHANGES TO THE FUNCTIONS BELOW ---
-
-// handleDuplicateImage handles the logic for re-uploading an existing image to new backends.
-func handleDuplicateImage(file *multipart.FileHeader, existingImage *database.Image, targetBackendIDs []uint, storageManager *manager.StorageManager) (*database.Image, error) {
-	// 1. Find out which backends need backfilling
+// handleDuplicateImage is for when the SAME user uploads the same file again.
+func handleDuplicateImage(existingImage *database.Image, file *multipart.FileHeader, targetBackendIDs []uint, storageManager *manager.StorageManager) (*database.Image, error) {
 	var backendsToBackfill []database.Backend
 	var allPossibleBackends []database.Backend
 
@@ -279,54 +199,93 @@ func handleDuplicateImage(file *multipart.FileHeader, existingImage *database.Im
 		}
 	}
 
-	// 2. If no backfill is needed, just return the existing info
 	if len(backendsToBackfill) == 0 {
-		log.Printf("Image fully duplicated on all target backends. No backfill needed.")
 		return existingImage, nil
 	}
 
-	// 3. Otherwise, distribute the file to the missing backends
-	log.Printf("Backfilling image to %d new backends.", len(backendsToBackfill))
 	uniqueFilename := fmt.Sprintf("%s%s", existingImage.UUID, filepath.Ext(file.Filename))
 	distributeToBackends(file, uniqueFilename, existingImage.ID, backendsToBackfill, storageManager)
 
-	// 4. Reload and return image info
 	database.DB.Preload("StorageLocations.Backend").First(&existingImage, existingImage.ID)
 	return existingImage, nil
 }
 
-// distributeToBackends concurrently uploads a file to a list of specified backends.
+// handleSharedImage creates a new Image metadata record for a user, linking to existing physical files.
+func handleSharedImage(file *multipart.FileHeader, userID uint, fileMD5 string, existingImage *database.Image) (*database.Image, error) {
+	width, height, err := getImageDimensions(file)
+	if err != nil {
+		log.Printf("Could not get image dimensions for shared image %s: %v. Using existing.", file.Filename, err)
+		width = existingImage.Width
+		height = existingImage.Height
+	}
+
+	// Create a new image record for the new user. This will now succeed due to the composite unique index.
+	image := &database.Image{
+		UUID:             uuid.New().String(),
+		MD5:              fileMD5,
+		OriginalFilename: file.Filename,
+		FileSize:         file.Size,
+		ContentType:      file.Header.Get("Content-Type"),
+		Width:            width,
+		Height:           height,
+		UserID:           userID,
+	}
+	if err := database.DB.Create(&image).Error; err != nil {
+		return nil, fmt.Errorf("failed to create shared image record: %w", err)
+	}
+
+	// Create new storage location records pointing to the OLD physical files.
+	var newLocations []database.StorageLocation
+	for _, loc := range existingImage.StorageLocations {
+		if loc.IsActive { // Only copy active locations
+			newLocations = append(newLocations, database.StorageLocation{
+				ImageID:          image.ID,
+				BackendID:        loc.BackendID,
+				StorageType:      loc.StorageType,
+				URL:              loc.URL,
+				DeleteIdentifier: loc.DeleteIdentifier,
+				IsActive:         true,
+			})
+		}
+	}
+
+	if len(newLocations) > 0 {
+		if err := database.DB.Create(&newLocations).Error; err != nil {
+			database.DB.Delete(&image)
+			return nil, fmt.Errorf("failed to link shared storage locations: %w", err)
+		}
+	}
+
+	database.DB.Preload("StorageLocations.Backend").First(&image, image.ID)
+	return image, nil
+}
+
 func distributeToBackends(file *multipart.FileHeader, uniqueFilename string, imageID uint, backends []database.Backend, storageManager *manager.StorageManager) {
 	var wg sync.WaitGroup
-
 	for _, backend := range backends {
 		wg.Add(1)
 		go func(b database.Backend) {
 			defer wg.Done()
-
 			uploader, found := storageManager.Get(b.ID)
 			if !found {
-				log.Printf("Uploader not found for backend %s (ID: %d), skipping upload.", b.Name, b.ID)
+				log.Printf("Uploader not found for backend %s (ID: %d), skipping.", b.Name, b.ID)
 				return
 			}
 
-			uploadResultURL, err := uploader.Upload(file, uniqueFilename)
+			fileReader, err := file.Open()
+			if err != nil {
+				log.Printf("Failed to open file for backend %s: %v", b.Name, err)
+				return
+			}
+			defer fileReader.Close()
+
+			uploadResultURL, err := uploader.Upload(file, uniqueFilename, fileReader)
 			if err != nil {
 				log.Printf("Failed to upload to %s (type: %s): %v", b.Name, uploader.Type(), err)
 				return
 			}
 
-			finalURL := uploadResultURL
-			deleteIdentifier := ""
-
-			if uploader.Type() == "sm.ms" {
-				parts := strings.Split(uploadResultURL, "@@@")
-				if len(parts) == 2 {
-					finalURL = parts[0]
-					deleteIdentifier = parts[1]
-				}
-			}
-
+			finalURL, deleteIdentifier := parseUploadResult(uploadResultURL, uploader.Type())
 			location := database.StorageLocation{
 				ImageID:          imageID,
 				BackendID:        b.ID,
@@ -345,55 +304,59 @@ func distributeToBackends(file *multipart.FileHeader, uniqueFilename string, ima
 // DeleteImage deletes an image and its stored files from all backends.
 func DeleteImage(imageUUID string, userID uint, userRole string, storageManager *manager.StorageManager) error {
 	var image database.Image
-	err := database.DB.Preload("StorageLocations").Where("uuid = ?", imageUUID).First(&image).Error
+	query := database.DB.Preload("StorageLocations").Where("uuid = ?", imageUUID)
+	if userRole != "admin" {
+		query = query.Where("user_id = ?", userID)
+	}
+	err := query.First(&image).Error
+
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return errors.New("image not found")
+			return errors.New("image not found or permission denied")
 		}
 		return err
 	}
 
-	if userRole != "admin" && image.UserID != userID {
-		return errors.New("permission denied to delete this image")
-	}
+	var count int64
+	database.DB.Model(&database.Image{}).Where("md5 = ? AND id != ?", image.MD5, image.ID).Count(&count)
 
-	var wg sync.WaitGroup
-	for _, loc := range image.StorageLocations {
-		wg.Add(1)
-		go func(location database.StorageLocation) {
-			defer wg.Done()
-			uploader, found := storageManager.Get(location.BackendID)
-			if !found {
-				log.Printf("Uploader for BackendID %d not found, cannot delete physical file at %s", location.BackendID, location.URL)
-				return
-			}
-			deleteID := location.DeleteIdentifier
-			if location.StorageType == "local" {
-				parsedURL, err := url.Parse(location.URL)
-				if err == nil {
-					deleteID = path.Base(parsedURL.Path)
+	if count == 0 {
+		var wg sync.WaitGroup
+		for _, loc := range image.StorageLocations {
+			wg.Add(1)
+			go func(location database.StorageLocation) {
+				defer wg.Done()
+				uploader, found := storageManager.Get(location.BackendID)
+				if !found {
+					log.Printf("Uploader for BackendID %d not found, cannot delete file at %s", location.BackendID, location.URL)
+					return
 				}
-			}
-			if err := uploader.Delete(deleteID); err != nil {
-				log.Printf("Failed to delete file from %s (URL: %s): %v", location.StorageType, location.URL, err)
-			} else {
-				log.Printf("Successfully deleted file from %s (URL: %s)", location.StorageType, location.URL)
-			}
-		}(loc)
+				deleteID := location.DeleteIdentifier
+				if location.StorageType == "local" {
+					if parsedURL, err := url.Parse(location.URL); err == nil {
+						deleteID = path.Base(parsedURL.Path)
+					}
+				}
+				if err := uploader.Delete(deleteID); err != nil {
+					log.Printf("Failed to delete file from %s (URL: %s): %v", location.StorageType, location.URL, err)
+				} else {
+					log.Printf("Successfully deleted file from %s (URL: %s)", location.StorageType, location.URL)
+				}
+			}(loc)
+		}
+		wg.Wait()
+	} else {
+		log.Printf("Skipping physical file deletion for MD5 %s as it is referenced by other records.", image.MD5)
 	}
-	wg.Wait()
 
 	return database.DB.Transaction(func(tx *gorm.DB) error {
-		if len(image.StorageLocations) > 0 {
-			if err := tx.Delete(&image.StorageLocations).Error; err != nil {
-				return err
-			}
+		if err := tx.Delete(&database.StorageLocation{}, "image_id = ?", image.ID).Error; err != nil {
+			return err
 		}
 		return tx.Delete(&image).Error
 	})
 }
 
-// GetImageRedirectURL gets a publicly accessible URL for an image.
 func GetHealthyStorageLocation(imageUUID string) (*database.StorageLocation, error) {
 	var image database.Image
 	err := database.DB.Preload("StorageLocations.Backend").Where("uuid = ?", imageUUID).First(&image).Error
@@ -405,52 +368,37 @@ func GetHealthyStorageLocation(imageUUID string) (*database.StorageLocation, err
 	}
 
 	maxFailures := GetRetryCount()
-	// --- 2. 新增: 从内存缓存获取访问策略 ---
 	accessPolicy := GetAccessPolicy()
 
 	var availableLocations []database.StorageLocation
 	for _, loc := range image.StorageLocations {
-		// 筛选条件: 图片自身的存储位置是激活的 AND 其所属的后端是允许跳转的 AND 失败次数未达上限
 		if loc.IsActive && loc.Backend.AllowRedirect && loc.FailureCount < maxFailures {
 			availableLocations = append(availableLocations, loc)
 		}
 	}
 
 	if len(availableLocations) == 0 {
-		return nil, errors.New("no available storage locations for this image, all are inactive or have reached the failure limit")
+		return nil, errors.New("no available storage locations for this image")
 	}
 
-	// --- 3. 核心修改: 根据访问策略决定排序方式 ---
-	log.Printf("Applying access policy: '%s'", accessPolicy)
 	if accessPolicy == "priority" {
-		// 优先级策略: 按照 Backend 的 Priority 字段从小到大排序
 		sort.Slice(availableLocations, func(i, j int) bool {
 			return availableLocations[i].Backend.Priority < availableLocations[j].Backend.Priority
 		})
 	} else {
-		// 默认或随机策略: 随机打乱列表顺序
 		rand.Seed(time.Now().UnixNano())
 		rand.Shuffle(len(availableLocations), func(i, j int) {
 			availableLocations[i], availableLocations[j] = availableLocations[j], availableLocations[i]
 		})
 	}
-	// --- 策略应用结束 ---
 
 	for i := range availableLocations {
 		loc := &availableLocations[i]
-		var isHealthy bool
-
+		isHealthy := false
 		if loc.StorageType == "local" {
-			parsedURL, err := url.Parse(loc.URL)
-			if err != nil {
-				log.Printf("[Health Check] Failed to parse local URL %s: %v", loc.URL, err)
-				isHealthy = false
-			} else {
-				localPath := "." + parsedURL.Path
-				if _, err := os.Stat(localPath); err == nil {
+			if parsedURL, err := url.Parse(loc.URL); err == nil {
+				if _, err := os.Stat("." + parsedURL.Path); err == nil {
 					isHealthy = true
-				} else {
-					isHealthy = false
 				}
 			}
 		} else {
@@ -458,20 +406,15 @@ func GetHealthyStorageLocation(imageUUID string) (*database.StorageLocation, err
 		}
 
 		if isHealthy {
-			// 2. --- 修改点：异步重置失败次数 ---
 			if loc.FailureCount > 0 {
 				go func(locationID uint) {
 					database.DB.Model(&database.StorageLocation{}).Where("id = ?", locationID).Update("failure_count", 0)
-					log.Printf("Asynchronously reset failure count for StorageLocation ID %d.", locationID)
 				}(loc.ID)
 			}
-			// 立即返回健康的链接，不再等待数据库操作
 			return loc, nil
 		} else {
-			// 3. --- 修改点：异步增加失败次数 ---
 			go func(locationID uint) {
 				database.DB.Model(&database.StorageLocation{}).Where("id = ?", locationID).Update("failure_count", gorm.Expr("failure_count + 1"))
-				log.Printf("Asynchronously incremented failure count for StorageLocation ID %d.", locationID)
 			}(loc.ID)
 		}
 	}
@@ -479,7 +422,6 @@ func GetHealthyStorageLocation(imageUUID string) (*database.StorageLocation, err
 	return nil, errors.New("all available storage locations are currently unreachable")
 }
 
-// ListImages now supports pagination.
 func ListImages(userID uint, userRole string, keyword string, page int, pageSize int) (*ListImagesResponse, error) {
 	var images []database.Image
 	var total int64
@@ -511,15 +453,30 @@ func ListImages(userID uint, userRole string, keyword string, page int, pageSize
 	}, nil
 }
 
-// BatchDeleteImages starts a background task to delete images.
+// BatchBackfillImagesForUser starts a backfill task, ensuring the user owns all images.
+func BatchBackfillImagesForUser(imageUUIDs []string, backendID uint, userID uint, storageManager *manager.StorageManager) (string, error) {
+	var count int64
+	database.DB.Model(&database.Image{}).Where("uuid IN ? AND user_id = ?", imageUUIDs, userID).Count(&count)
+	if count != int64(len(imageUUIDs)) {
+		return "", errors.New("permission denied: you do not own all the selected images")
+	}
+
+	return BatchBackfillToBackend(imageUUIDs, backendID, storageManager)
+}
+
+func BatchSetRandomStatus(imageUUIDs []string, allowRandom bool) error {
+	if err := database.DB.Model(&database.Image{}).Where("uuid IN ?", imageUUIDs).Update("allow_random", allowRandom).Error; err != nil {
+		return err
+	}
+	go UpdateRandomImageCache()
+	return nil
+}
+
 func BatchDeleteImages(imageUUIDs []string, userID uint, userRole string, storageManager *manager.StorageManager) (string, error) {
 	taskID := uuid.New().String()
 	task := &Task{
-		ID:        taskID,
-		Type:      "Batch Delete",
-		Status:    "running",
-		Total:     len(imageUUIDs),
-		CreatedAt: time.Now(),
+		ID: taskID, Type: "Batch Delete", Status: "running",
+		Total: len(imageUUIDs), CreatedAt: time.Now(),
 	}
 	taskMu.Lock()
 	tasks[taskID] = task
@@ -542,15 +499,11 @@ func BatchDeleteImages(imageUUIDs []string, userID uint, userRole string, storag
 	return taskID, nil
 }
 
-// BatchBackfillToBackend starts a background task to re-upload images.
 func BatchBackfillToBackend(imageUUIDs []string, backendID uint, storageManager *manager.StorageManager) (string, error) {
 	taskID := uuid.New().String()
 	task := &Task{
-		ID:        taskID,
-		Type:      "Batch Backfill (from Local)",
-		Status:    "running",
-		Total:     len(imageUUIDs),
-		CreatedAt: time.Now(),
+		ID: taskID, Type: "Batch Backfill", Status: "running",
+		Total: len(imageUUIDs), CreatedAt: time.Now(),
 	}
 	taskMu.Lock()
 	tasks[taskID] = task
@@ -563,16 +516,14 @@ func BatchBackfillToBackend(imageUUIDs []string, backendID uint, storageManager 
 			task.Status = "failed"
 			task.Message = "Target backend not found"
 			taskMu.Unlock()
-			log.Printf("[Task %s] Failed: Target backend ID %d not found", taskID, backendID)
 			return
 		}
 
 		for i, uuid := range imageUUIDs {
-			func() { // Use a closure to ensure DB connections are handled correctly in the loop
+			func() {
 				var image database.Image
 				if err := database.DB.Preload("StorageLocations").Where("uuid = ?", uuid).First(&image).Error; err != nil {
-					log.Printf("[Task %s] Skipping %s: image record not found", taskID, uuid)
-					return // to next iteration
+					return
 				}
 
 				existsOnTarget := false
@@ -583,33 +534,23 @@ func BatchBackfillToBackend(imageUUIDs []string, backendID uint, storageManager 
 					}
 				}
 
-				if existsOnTarget {
-					log.Printf("[Task %s] Skipping %s: already exists on target backend", taskID, uuid)
-				} else {
+				if !existsOnTarget {
 					var localPath string
 					for _, loc := range image.StorageLocations {
 						if loc.StorageType == "local" {
-							parsedURL, err := url.Parse(loc.URL)
-							if err == nil {
+							if parsedURL, err := url.Parse(loc.URL); err == nil {
 								localPath = filepath.Join(".", parsedURL.Path)
 							}
 							break
 						}
 					}
-
-					if localPath == "" {
-						log.Printf("[Task %s] Skipping %s: no local storage record found", taskID, uuid)
-					} else {
-						// Use the new, correct helper function
-						err := backfillFromLocalFile(&image, localPath, backendID, targetUploader)
-						if err != nil {
-							log.Printf("[Task %s] Backfill FAILED for %s from %s: %v", taskID, uuid, localPath, err)
-						} else {
-							log.Printf("[Task %s] Backfill SUCCESS for %s from %s", taskID, uuid, localPath)
+					if localPath != "" {
+						if err := backfillFromLocalFile(&image, localPath, backendID, targetUploader); err != nil {
+							log.Printf("[Task %s] Backfill FAILED for %s: %v", taskID, uuid, err)
 						}
 					}
 				}
-			}() // End of closure
+			}()
 
 			taskMu.Lock()
 			tasks[taskID].Progress = i + 1
@@ -624,31 +565,27 @@ func BatchBackfillToBackend(imageUUIDs []string, backendID uint, storageManager 
 	return taskID, nil
 }
 
-// ** CORRECTED backfillFromLocalFile HELPER FUNCTION **
 func backfillFromLocalFile(image *database.Image, localPath string, targetBackendID uint, targetUploader storage.Uploader) error {
-	// 1. Check if the local file actually exists
-	if _, err := os.Stat(localPath); os.IsNotExist(err) {
-		return fmt.Errorf("local source file not found at %s", localPath)
+	file, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to open local file %s: %w", localPath, err)
+	}
+	defer file.Close()
+
+	fileInfo, _ := file.Stat()
+
+	tempHeader := &multipart.FileHeader{
+		Filename: image.OriginalFilename,
+		Size:     fileInfo.Size(),
 	}
 
-	// 2. Execute upload using the new interface method
 	uniqueFilename := fmt.Sprintf("%s%s", image.UUID, filepath.Ext(image.OriginalFilename))
-	uploadResultURL, err := targetUploader.UploadFromFile(localPath, uniqueFilename)
+	uploadResultURL, err := targetUploader.Upload(tempHeader, uniqueFilename, file)
 	if err != nil {
 		return fmt.Errorf("upload failed: %w", err)
 	}
 
-	// 3. Save the new storage location record to the database
-	finalURL := uploadResultURL
-	deleteIdentifier := ""
-	if targetUploader.Type() == "sm.ms" {
-		parts := strings.Split(uploadResultURL, "@@@")
-		if len(parts) == 2 {
-			finalURL = parts[0]
-			deleteIdentifier = parts[1]
-		}
-	}
-
+	finalURL, deleteIdentifier := parseUploadResult(uploadResultURL, targetUploader.Type())
 	location := database.StorageLocation{
 		ImageID:          image.ID,
 		BackendID:        targetBackendID,
@@ -660,7 +597,18 @@ func backfillFromLocalFile(image *database.Image, localPath string, targetBacken
 	return database.DB.Create(&location).Error
 }
 
-// GetTasks returns the list of all tasks.
+func parseUploadResult(result, uploaderType string) (string, string) {
+	finalURL := result
+	deleteIdentifier := ""
+	if uploaderType == "sm.ms" {
+		if parts := strings.Split(result, "@@@"); len(parts) == 2 {
+			finalURL = parts[0]
+			deleteIdentifier = parts[1]
+		}
+	}
+	return finalURL, deleteIdentifier
+}
+
 func GetTasks() []*Task {
 	taskMu.Lock()
 	defer taskMu.Unlock()
@@ -672,27 +620,48 @@ func GetTasks() []*Task {
 }
 
 func checkURLHealth(url string) bool {
-	client := http.Client{
-		Timeout: 5 * time.Second, // 设置5秒超时
-	}
+	client := http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequest("HEAD", url, nil)
 	if err != nil {
 		log.Printf("Failed to create HEAD request for %s: %v", url, err)
 		return false
 	}
-
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("Health check failed for %s: %v", url, err)
 		return false
 	}
 	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 400
+}
 
-	// 认为 2xx 或 3xx 的状态码是健康的
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		return true
+func InitRandomImageCache() {
+	log.Println("Initializing random image cache...")
+	UpdateRandomImageCache()
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		for range ticker.C {
+			log.Println("Updating random image cache on schedule...")
+			UpdateRandomImageCache()
+		}
+	}()
+}
+
+func UpdateRandomImageCache() {
+	var uuids []string
+	database.DB.Model(&database.Image{}).Where("allow_random = ?", true).Pluck("uuid", &uuids)
+	cacheMutex.Lock()
+	randomImageUUIDs = uuids
+	cacheMutex.Unlock()
+	log.Printf("Random image cache updated. Total images in pool: %d", len(uuids))
+}
+
+func GetRandomImageUUID() (string, error) {
+	cacheMutex.RLock()
+	defer cacheMutex.RUnlock()
+	if len(randomImageUUIDs) == 0 {
+		return "", errors.New("no images available in the random pool")
 	}
-
-	log.Printf("Health check for %s returned non-success status: %s", url, resp.Status)
-	return false
+	return randomImageUUIDs[rand.Intn(len(randomImageUUIDs))], nil
 }

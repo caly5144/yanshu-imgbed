@@ -16,24 +16,18 @@ type LocalUploader struct {
 
 // NewLocalUploader 创建一个新的本地存储实例
 func NewLocalUploader(storagePath, publicURL string) *LocalUploader {
-	// 确保目录存在
 	if _, err := os.Stat(storagePath); os.IsNotExist(err) {
 		os.MkdirAll(storagePath, os.ModePerm)
 	}
 	return &LocalUploader{StoragePath: storagePath, PublicURL: publicURL}
 }
 
-func (l *LocalUploader) Upload(file *multipart.FileHeader, uniqueFilename string) (string, error) {
-	src, err := file.Open()
-	if err != nil {
-		return "", err
-	}
-	defer src.Close()
-
+// --- 已修改：匹配新的接口，直接使用 src ---
+func (l *LocalUploader) Upload(fileHeader *multipart.FileHeader, uniqueFilename string, src io.Reader) (string, error) {
+	// 不再需要从 fileHeader.Open()，直接使用传入的 src
 	return l.saveFile(src, uniqueFilename)
 }
 
-// ** NEW METHOD IMPLEMENTATION **
 func (l *LocalUploader) UploadFromFile(localPath string, uniqueFilename string) (string, error) {
 	src, err := os.Open(localPath)
 	if err != nil {
@@ -44,8 +38,6 @@ func (l *LocalUploader) UploadFromFile(localPath string, uniqueFilename string) 
 	return l.saveFile(src, uniqueFilename)
 }
 
-// ** NEW HELPER FUNCTION to avoid code duplication **
-// saveFile handles the core logic of saving an io.Reader to a destination file.
 func (l *LocalUploader) saveFile(src io.Reader, uniqueFilename string) (string, error) {
 	dst := filepath.Join(l.StoragePath, uniqueFilename)
 	out, err := os.Create(dst)
@@ -65,15 +57,13 @@ func (l *LocalUploader) Type() string {
 	return "local"
 }
 
-// Delete 从本地文件系统删除文件
-// DeleteIdentifier 在这里是相对于 storagePath 的文件名，例如 UUID.ext
 func (l *LocalUploader) Delete(deleteIdentifier string) error {
 	if deleteIdentifier == "" {
 		return fmt.Errorf("local delete identifier is empty")
 	}
 	fullPath := filepath.Join(l.StoragePath, deleteIdentifier)
 	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-		return nil // 文件不存在，视为删除成功
+		return nil
 	}
 	return os.Remove(fullPath)
 }

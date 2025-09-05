@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -11,7 +10,44 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ListImagesHandler 列出图片，会根据用户角色和ID进行过滤
+// BatchUserImageRequest defines the structure for user-level batch operations.
+type BatchUserImageRequest struct {
+	Action     string   `json:"action" binding:"required"`
+	ImageUUIDs []string `json:"image_uuids" binding:"required"`
+	BackendID  uint     `json:"backend_id"` // For backfill
+}
+
+// BatchUserImageHandler handles batch operations initiated by non-admin users.
+func (h *APIHandlers) BatchUserImageHandler(c *gin.Context) {
+	var req BatchUserImageRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID := c.MustGet("userID").(uint)
+
+	switch req.Action {
+	case "backfill":
+		if req.BackendID == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "backend_id is required for backfill action"})
+			return
+		}
+		taskID, err := service.BatchBackfillImagesForUser(req.ImageUUIDs, req.BackendID, userID, h.StorageManager)
+		if err != nil {
+			// This could be a permission error or other internal error.
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "Batch backfill task started for your images", "task_id": taskID})
+	// Add other user-level batch actions here in the future if needed.
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid action for user"})
+		return
+	}
+}
+
+// ListImagesHandler lists images, filtered by user role.
 func ListImagesHandler(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	userRole := c.MustGet("userRole").(string)
@@ -28,17 +64,14 @@ func ListImagesHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// ListBackendsHandler 列出所有活跃的存储后端 (供前端显示复选框用)
-// 理论上不需要认证，但在我们的系统里，只有认证用户才能使用上传页。
-// 所以放在 protectedApiGroup 中比较合理。
+// ListBackendsHandler lists all active storage backends for the upload form.
 func ListBackendsHandler(c *gin.Context) {
 	var backends []database.Backend
-	// 允许所有认证用户查看活跃的后端列表
 	database.DB.Where("allow_upload = ?", true).Order("priority asc").Find(&backends)
 	c.JSON(http.StatusOK, backends)
 }
 
-// --- GetStatsHandler 也移动到这里，因为它提供的是概览数据，所有用户都能看，但需要认证 ---
+// GetStatsHandler provides overview statistics, filtered by user role.
 func GetStatsHandler(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	userRole := c.MustGet("userRole").(string)
@@ -46,29 +79,21 @@ func GetStatsHandler(c *gin.Context) {
 	var totalImages, totalBackends, todayUploads int64
 	var totalSize int64
 
-	// --- NEW: 为 Count 和 Select 创建独立的查询链 ---
-
-	// 查询总图片数
 	queryTotalImages := database.DB.Model(&database.Image{})
 	if userRole != "admin" {
 		queryTotalImages = queryTotalImages.Where("user_id = ?", userID)
 	}
 	queryTotalImages.Count(&totalImages)
 
-	fmt.Println(userID, totalImages)
-	// 查询总占用空间
 	queryTotalSize := database.DB.Model(&database.Image{})
 	if userRole != "admin" {
 		queryTotalSize = queryTotalSize.Where("user_id = ?", userID)
 	}
 	queryTotalSize.Select("IFNULL(sum(file_size), 0)").Row().Scan(&totalSize)
 
-	// --- END NEW ---
+	// Total backends is a global stat
+	database.DB.Model(&database.Backend{}).Count(&totalBackends)
 
-	// 查询总后端数 (保持不变)
-	database.DB.Model(&database.Backend{}).Where("1 = ?", 1).Count(&totalBackends)
-
-	// 查询今日上传数 (保持不变，但为了代码一致性，也建议独立查询链)
 	today := time.Now().Format("2006-01-02")
 	queryTodayUploads := database.DB.Model(&database.Image{})
 	if userRole != "admin" {
@@ -84,7 +109,7 @@ func GetStatsHandler(c *gin.Context) {
 	})
 }
 
-// ListRecentImagesHandler 也移动到这里
+// ListRecentImagesHandler lists recent images, filtered by user role.
 func ListRecentImagesHandler(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 	userRole := c.MustGet("userRole").(string)
@@ -98,7 +123,7 @@ func ListRecentImagesHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, recentImages)
 }
 
-// GetSettingsHandler 也移动到这里，因为普通用户也可能需要查看某些公开设置
+// GetSettingsHandler gets public settings.
 func GetSettingsHandler(c *gin.Context) {
 	var settings []database.Setting
 	database.DB.Find(&settings)

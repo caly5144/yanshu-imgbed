@@ -11,15 +11,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func GetRandomImageHandler(c *gin.Context) {
+// GetRandomImageRedirectHandler handles requests for a random image.
+func GetRandomImageRedirectHandler(c *gin.Context) {
 	uuid, err := service.GetRandomImageUUID()
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 构造分发链接并执行302重定向
-	// 这将复用/i/:uuid的健康检查和多后端跳转逻辑
+	// Construct the redirect URL and perform a 302 redirect.
+	// This reuses the existing /i/:uuid logic.
 	redirectURL := fmt.Sprintf("/i/%s", uuid)
 	c.Redirect(http.StatusFound, redirectURL)
 }
@@ -32,7 +33,7 @@ func (h *APIHandlers) UploadHandler(c *gin.Context) {
 	}
 
 	maxUploadMB := service.GetMaxUploadMB()
-	maxSizeBytes := int64(maxUploadMB) * 1024 * 1024 // 将 MB 转换为 bytes
+	maxSizeBytes := int64(maxUploadMB) * 1024 * 1024
 	if file.Size > maxSizeBytes {
 		errorMsg := fmt.Sprintf("File size exceeds the limit of %dMB", maxUploadMB)
 		c.JSON(http.StatusBadRequest, gin.H{"error": errorMsg})
@@ -42,9 +43,7 @@ func (h *APIHandlers) UploadHandler(c *gin.Context) {
 	userID := c.MustGet("userID").(uint)
 
 	var targetBackendIDs []uint
-	// 从表单数据中获取 'backends' 字段，它可能是以逗号分隔的ID字符串
-	// 或者多次传入 'backends[]' 字段
-	backendIDsParam := c.PostFormArray("backends") // 获取所有名为 'backends' 的表单字段
+	backendIDsParam := c.PostFormArray("backends")
 	if len(backendIDsParam) > 0 {
 		for _, idStr := range backendIDsParam {
 			id, parseErr := strconv.ParseUint(idStr, 10, 32)
@@ -56,19 +55,17 @@ func (h *APIHandlers) UploadHandler(c *gin.Context) {
 		}
 	}
 
-	// 修改 UploadImage 函数调用，传入 targetBackendIDs
 	image, err := service.UploadImage(file, userID, targetBackendIDs, h.StorageManager)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 构造新的响应格式以匹配前端JS
 	var locationsResponse []gin.H
 	for _, loc := range image.StorageLocations {
-		backendName := loc.StorageType // 默认值
+		backendName := loc.StorageType
 		if loc.Backend.Name != "" {
-			backendName = loc.Backend.Name // 如果成功预加载，则使用后端名称
+			backendName = loc.Backend.Name
 		}
 		locationsResponse = append(locationsResponse, gin.H{
 			"id":           loc.ID,
@@ -83,13 +80,12 @@ func (h *APIHandlers) UploadHandler(c *gin.Context) {
 			"hash":      image.UUID,
 			"filename":  image.OriginalFilename,
 			"size":      image.FileSize,
-			"locations": locationsResponse,                                  // 包含详细的存储位置列表
-			"view_url":  fmt.Sprintf("%s/i/%s", c.Request.Host, image.UUID), // 增加一个主访问链接
+			"locations": locationsResponse,
+			"view_url":  fmt.Sprintf("%s/i/%s", c.Request.Host, image.UUID),
 		},
 	})
 }
 
-// RedirectHandler 保持不变, 但路由会变
 func ServeImageHandler(c *gin.Context) {
 	uuid := c.Param("uuid")
 	location, err := service.GetHealthyStorageLocation(uuid)
@@ -103,22 +99,15 @@ func ServeImageHandler(c *gin.Context) {
 		return
 	}
 
-	// --- 2. 新增的核心逻辑 ---
 	if location.StorageType == "local" {
-		// 对于本地文件，我们直接提供服务，而不是重定向
 		parsedURL, err := url.Parse(location.URL)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid local file URL"})
 			return
 		}
-		// 从 URL 路径构建本地文件系统路径
 		localPath := "." + parsedURL.Path
-
-		// c.File() 会自动处理文件不存在的情况，并返回一个 404 响应。
-		// 这就解决了“连接被拒绝”的问题！
 		c.File(localPath)
 	} else {
-		// 对于远程存储，我们像以前一样进行重定向
 		c.Redirect(http.StatusFound, location.URL)
 	}
 }

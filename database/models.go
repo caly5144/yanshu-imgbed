@@ -6,7 +6,7 @@ import (
 	"gorm.io/datatypes"
 )
 
-// CustomModel 替换 gorm.Model，不包含 DeletedAt
+// CustomModel 替换 gorm.Model
 type CustomModel struct {
 	ID        uint `gorm:"primarykey"`
 	CreatedAt time.Time
@@ -17,9 +17,9 @@ type CustomModel struct {
 type User struct {
 	CustomModel
 	Username  string     `gorm:"type:varchar(50);uniqueIndex;not null"`
-	Password  string     `gorm:"type:varchar(255);not null"`      // 存储哈希后的密码
-	Role      string     `gorm:"type:varchar(20);default:'user'"` // "admin", "user"
-	APITokens []APIToken `gorm:"foreignKey:UserID"`               // 用户拥有的API Token
+	Password  string     `gorm:"type:varchar(255);not null"`
+	Role      string     `gorm:"type:varchar(20);default:'user'"`
+	APITokens []APIToken `gorm:"foreignKey:UserID"`
 }
 
 // APIToken API Token 模型
@@ -27,25 +27,27 @@ type APIToken struct {
 	CustomModel
 	UserID    uint
 	User      User
-	Token     string     `gorm:"type:varchar(255);uniqueIndex;not null"` // 实际的Token值
-	Name      string     `gorm:"type:varchar(100)"`                      // Token的名称，方便用户管理
-	IsActive  bool       `gorm:"default:true"`                           // 是否启用
-	ExpiresAt *time.Time // Token过期时间，可选
+	Token     string `gorm:"type:varchar(255);uniqueIndex;not null"`
+	Name      string `gorm:"type:varchar(100)"`
+	IsActive  bool   `gorm:"default:true"`
+	ExpiresAt *time.Time
 }
 
 // Image 主表
 type Image struct {
 	CustomModel
-	UUID             string `gorm:"type:varchar(36);uniqueIndex;not null"`
-	MD5              string `gorm:"type:varchar(32);uniqueIndex;not null"`
+	UUID string `gorm:"type:varchar(36);uniqueIndex;not null"`
+	// --- 已修改：移除独立唯一索引，改为与UserID的复合唯一索引 ---
+	MD5              string `gorm:"type:varchar(32);index:idx_user_md5,unique"`
 	OriginalFilename string `gorm:"type:varchar(255)"`
 	FileSize         int64
 	ContentType      string            `gorm:"type:varchar(50)"`
 	Width            int               `gorm:"default:0"`
 	Height           int               `gorm:"default:0"`
-	AllowRandom      bool              `gorm:"default:false;index"`
 	StorageLocations []StorageLocation `gorm:"foreignKey:ImageID"`
-	UserID           uint              `gorm:"index"`
+	// --- 已修改：将 UserID 加入复合唯一索引 ---
+	UserID      uint `gorm:"index:idx_user_md5,unique"`
+	AllowRandom bool `gorm:"default:false;index"`
 }
 
 // StorageLocation 存储位置表

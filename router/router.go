@@ -16,7 +16,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// SetupRouter 接收 embed.FS 作为参数
 func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, staticFS embed.FS) *gin.Engine {
 
 	if config.Cfg.Server.Mode == "release" {
@@ -31,21 +30,19 @@ func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, s
 	r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
 	apiHandlers := api.NewAPIHandlers(storageManager)
 
-	// 从传入的参数加载模板和静态文件
+	// Load templates and static files from embedded FS
 	templ := template.Must(template.ParseFS(templatesFS, "templates/*.html"))
 	r.SetHTMLTemplate(templ)
-
 	subStaticFS, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		log.Fatalf("Failed to create sub filesystem for static files: %v", err)
 	}
 	r.StaticFS("/static", http.FS(subStaticFS))
+
 	r.Static("/uploads", "./uploads")
 
-	// --- 页面路由 ---
-	r.GET("/login", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "login.html", nil)
-	})
+	// Page routes
+	r.GET("/login", func(c *gin.Context) { c.HTML(http.StatusOK, "login.html", nil) })
 	r.GET("/", func(c *gin.Context) {
 		var backends []database.Backend
 		database.DB.Where("allow_upload = ?", true).Order("priority asc").Find(&backends)
@@ -55,29 +52,23 @@ func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, s
 			"MaxUploadMB": maxUploadMB,
 		})
 	})
+	r.GET("/admin", func(c *gin.Context) { c.HTML(http.StatusOK, "admin.html", nil) })
+	r.GET("/admin/images/:uuid", func(c *gin.Context) { c.HTML(http.StatusOK, "image_details.html", nil) })
 
-	r.GET("/admin", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "admin.html", nil)
-	})
-	r.GET("/admin/images/:uuid", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "image_details.html", nil)
-	})
-
+	// Public routes
 	authGroup := r.Group("/auth")
 	{
 		authGroup.POST("/login", api.LoginHandler)
 	}
-
 	r.GET("/i/:uuid", api.ServeImageHandler)
+	r.GET("/api/random", api.GetRandomImageRedirectHandler) // Random image API
 
-	// --- 随机图片API路由 (公开) ---
-	r.GET("/api/random", api.GetRandomImageHandler)
-
-	r.POST("/api/upload/web", middleware.AuthMiddleware(), apiHandlers.UploadHandler)
-	r.POST("/api/upload/api", middleware.APITokenAuthMiddleware(), apiHandlers.UploadHandler)
-
+	// API routes requiring JWT Token (user and admin)
 	protectedApiGroup := r.Group("/api", middleware.AuthMiddleware())
 	{
+		protectedApiGroup.POST("/upload/web", apiHandlers.UploadHandler)
+		protectedApiGroup.POST("/images/batch", apiHandlers.BatchUserImageHandler) // NEW: User batch endpoint
+
 		protectedApiGroup.GET("/user/info", api.GetUserInfoHandler)
 		protectedApiGroup.POST("/user/change-password", api.ChangeMyPasswordHandler)
 		protectedApiGroup.GET("/user/tokens", api.ListAPITokensHandler)
@@ -92,6 +83,10 @@ func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, s
 		protectedApiGroup.GET("/settings", api.GetSettingsHandler)
 	}
 
+	// API route for API token uploads
+	r.POST("/api/upload/api", middleware.APITokenAuthMiddleware(), apiHandlers.UploadHandler)
+
+	// Admin-only API routes
 	adminApiGroup := r.Group("/api/admin", middleware.AuthMiddleware(), middleware.AdminAuthMiddleware())
 	{
 		adminApiGroup.GET("/backends/all", api.ListAllBackendsHandler)
@@ -100,17 +95,19 @@ func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, s
 		adminApiGroup.DELETE("/backends/:id", apiHandlers.DeleteBackendHandler)
 		adminApiGroup.POST("/backends/:id/toggle/:flag", apiHandlers.ToggleBackendFlagHandler)
 		adminApiGroup.POST("/backends/smms/validate-token", api.ValidateSmmsTokenHandler)
+
 		adminApiGroup.POST("/settings", api.SaveSettingsHandler)
+
 		adminApiGroup.GET("/users", api.ListUsersHandler)
 		adminApiGroup.POST("/users", api.RegisterUserHandler)
 		adminApiGroup.POST("/users/:id/reset-password", api.ResetPasswordHandler)
 		adminApiGroup.DELETE("/users/:id", api.DeleteUserHandler)
-		adminApiGroup.POST("/images/batch", apiHandlers.BatchImageHandler)
+
+		adminApiGroup.POST("/images/batch", apiHandlers.BatchAdminImageHandler) // Renamed from BatchImageHandler
+		adminApiGroup.POST("/images/:uuid/toggle-random", api.ToggleImageRandomStatusHandler)
 		adminApiGroup.GET("/tasks", api.ListTasksHandler)
 		adminApiGroup.GET("/images/:uuid", api.GetImageDetailsHandler)
 		adminApiGroup.POST("/storagelocations/:id/toggle", api.ToggleStorageLocationStatusHandler)
-		// --- 切换图片随机状态的API ---
-		adminApiGroup.POST("/images/:uuid/toggle-random", api.ToggleImageRandomStatusHandler)
 	}
 
 	return r

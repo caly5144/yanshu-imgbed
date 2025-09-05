@@ -15,33 +15,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// ToggleImageRandomStatusHandler 切换图片随机状态的处理器
-func ToggleImageRandomStatusHandler(c *gin.Context) {
-	uuid := c.Param("uuid")
-	image, err := service.ToggleImageRandomStatus(uuid)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Image not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update image status"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"message":      "Random status updated successfully",
-		"uuid":         image.UUID,
-		"allow_random": image.AllowRandom,
-	})
-}
-
-type BatchImageRequest struct {
+// BatchAdminImageRequest defines the structure for admin-level batch operations.
+type BatchAdminImageRequest struct {
 	Action     string   `json:"action" binding:"required"`
 	ImageUUIDs []string `json:"image_uuids" binding:"required"`
-	BackendID  uint     `json:"backend_id"` // Optional, for backend-specific actions
+	BackendID  uint     `json:"backend_id"` // Optional, for backfill
 }
 
-func (h *APIHandlers) BatchImageHandler(c *gin.Context) {
-	var req BatchImageRequest
+// BatchAdminImageHandler handles batch operations initiated by admins.
+func (h *APIHandlers) BatchAdminImageHandler(c *gin.Context) {
+	var req BatchAdminImageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -61,7 +44,6 @@ func (h *APIHandlers) BatchImageHandler(c *gin.Context) {
 			return
 		}
 		taskID, err = service.BatchBackfillToBackend(req.ImageUUIDs, req.BackendID, h.StorageManager)
-	// --- 新增：处理批量设置随机图库状态 ---
 	case "add_to_random":
 		err = service.BatchSetRandomStatus(req.ImageUUIDs, true)
 	case "remove_from_random":
@@ -71,22 +53,16 @@ func (h *APIHandlers) BatchImageHandler(c *gin.Context) {
 		return
 	}
 
-	// --- 修改：为非任务型操作提供即时响应 ---
-	if req.Action == "add_to_random" || req.Action == "remove_from_random" {
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"message": "Batch random status updated successfully"})
-		return
-	}
-
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Batch task started", "task_id": taskID})
+	if taskID != "" {
+		c.JSON(http.StatusOK, gin.H{"message": "Batch task started", "task_id": taskID})
+	} else {
+		c.JSON(http.StatusOK, gin.H{"message": "Batch operation completed successfully"})
+	}
 }
 
 func ListTasksHandler(c *gin.Context) {
@@ -94,13 +70,12 @@ func ListTasksHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, tasks)
 }
 
-// DeleteImageHandler 现在是 APIHandlers 的一个方法，可以访问 StorageManager
+// DeleteImageHandler is a method of APIHandlers to access the StorageManager
 func (h *APIHandlers) DeleteImageHandler(c *gin.Context) {
 	uuid := c.Param("uuid")
 	userID := c.MustGet("userID").(uint)
 	userRole := c.MustGet("userRole").(string)
 
-	// 将 h.StorageManager 作为第四个参数传入
 	if err := service.DeleteImage(uuid, userID, userRole, h.StorageManager); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -108,7 +83,16 @@ func (h *APIHandlers) DeleteImageHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Image deleted successfully"})
 }
 
-// --- 其他 Admin Handlers ---
+// ToggleImageRandomStatusHandler toggles the random status for an image.
+func ToggleImageRandomStatusHandler(c *gin.Context) {
+	uuid := c.Param("uuid")
+	image, err := service.ToggleImageRandomStatus(uuid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, image)
+}
 
 // CreateBackendHandler ...
 func (h *APIHandlers) CreateBackendHandler(c *gin.Context) {
@@ -150,15 +134,13 @@ func (h *APIHandlers) ToggleBackendFlagHandler(c *gin.Context) {
 		return
 	}
 
-	// --- 关键修复：添加数据库保存操作的错误处理 ---
 	if err := database.DB.Save(&backend).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update backend status"})
 		return
 	}
-	// --- 修复结束 ---
 
 	go h.StorageManager.Refresh()
-	c.JSON(http.StatusOK, backend) // 返回更新后的后端对象，使前端可以验证
+	c.JSON(http.StatusOK, backend)
 }
 
 func SaveSettingsHandler(c *gin.Context) {
@@ -168,11 +150,17 @@ func SaveSettingsHandler(c *gin.Context) {
 		return
 	}
 	for key, value := range newSettings {
-		database.DB.Model(&database.Setting{}).Where("key = ?", key).Update("value", value)
+		// Use transaction for multiple updates? For now, this is fine.
+		setting := database.Setting{Key: key, Value: value}
+		if err := database.DB.Where("key = ?", key).First(&database.Setting{}).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				database.DB.Create(&setting)
+			}
+		} else {
+			database.DB.Model(&database.Setting{}).Where("key = ?", key).Update("value", value)
+		}
 	}
 
-	// --- 2. 新增：更新内存中的设置缓存 ---
-	// 使用 goroutine 异步更新，避免阻塞当前请求
 	go func() {
 		if err := service.UpdateSettingsCache(); err != nil {
 			log.Printf("Error updating settings cache: %v", err)
@@ -182,7 +170,7 @@ func SaveSettingsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Settings saved successfully"})
 }
 
-// ListAllBackendsHandler (不需要 manager)
+// ListAllBackendsHandler (no manager needed)
 func ListAllBackendsHandler(c *gin.Context) {
 	var backends []database.Backend
 	database.DB.Order("priority asc").Find(&backends)
@@ -224,7 +212,7 @@ func (h *APIHandlers) DeleteBackendHandler(c *gin.Context) {
 	var count int64
 	database.DB.Model(&database.StorageLocation{}).Where("backend_id = ?", backendID).Count(&count)
 	if count > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无法删除：此后端仍有图片存储位置关联。"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot delete backend: still associated with stored images."})
 		return
 	}
 	if err := database.DB.Delete(&database.Backend{}, backendID).Error; err != nil {
@@ -232,10 +220,10 @@ func (h *APIHandlers) DeleteBackendHandler(c *gin.Context) {
 		return
 	}
 	go h.StorageManager.Refresh()
-	c.JSON(http.StatusOK, gin.H{"message": "后端删除成功"})
+	c.JSON(http.StatusOK, gin.H{"message": "Backend deleted successfully"})
 }
 
-// ValidateSmmsTokenHandler (不需要 manager)
+// ValidateSmmsTokenHandler (no manager needed)
 func ValidateSmmsTokenHandler(c *gin.Context) {
 	var req struct {
 		BaseURL string `json:"baseURL" binding:"required"`
@@ -247,13 +235,13 @@ func ValidateSmmsTokenHandler(c *gin.Context) {
 	}
 	uploader := storage.NewSmmsUploader(req.BaseURL, req.Token)
 	if err := uploader.CheckToken(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": fmt.Sprintf("Token验证失败: %v", err)})
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": fmt.Sprintf("Token validation failed: %v", err)})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Token验证成功"})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Token validation successful"})
 }
 
-// --- 新增：获取单张图片详细信息的处理器 ---
+// GetImageDetailsHandler gets details for a single image.
 func GetImageDetailsHandler(c *gin.Context) {
 	uuid := c.Param("uuid")
 	var image database.Image
@@ -269,7 +257,7 @@ func GetImageDetailsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, image)
 }
 
-// --- 新增：切换 StorageLocation IsActive 状态的处理器 ---
+// ToggleStorageLocationStatusHandler toggles the IsActive status of a StorageLocation.
 func ToggleStorageLocationStatusHandler(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
