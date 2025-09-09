@@ -472,6 +472,17 @@ func BatchSetRandomStatus(imageUUIDs []string, allowRandom bool) error {
 	return nil
 }
 
+func BatchDeleteImagesForUser(imageUUIDs []string, userID uint, storageManager *manager.StorageManager) (string, error) {
+	var count int64
+	database.DB.Model(&database.Image{}).Where("uuid IN ? AND user_id = ?", imageUUIDs, userID).Count(&count)
+	if count != int64(len(imageUUIDs)) {
+		return "", errors.New("permission denied: you do not own all the selected images")
+	}
+
+	// Pass "user" role to ensure underlying functions respect user-level constraints
+	return BatchDeleteImages(imageUUIDs, userID, "user", storageManager)
+}
+
 func BatchDeleteImages(imageUUIDs []string, userID uint, userRole string, storageManager *manager.StorageManager) (string, error) {
 	taskID := uuid.New().String()
 	task := &Task{

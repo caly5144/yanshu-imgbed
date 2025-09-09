@@ -26,25 +26,29 @@ func (h *APIHandlers) BatchUserImageHandler(c *gin.Context) {
 	}
 
 	userID := c.MustGet("userID").(uint)
+	var taskID string
+	var err error
 
 	switch req.Action {
+	case "delete":
+		taskID, err = service.BatchDeleteImagesForUser(req.ImageUUIDs, userID, h.StorageManager)
 	case "backfill":
 		if req.BackendID == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "backend_id is required for backfill action"})
 			return
 		}
-		taskID, err := service.BatchBackfillImagesForUser(req.ImageUUIDs, req.BackendID, userID, h.StorageManager)
-		if err != nil {
-			// This could be a permission error or other internal error.
-			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"message": "Batch backfill task started for your images", "task_id": taskID})
-	// Add other user-level batch actions here in the future if needed.
+		taskID, err = service.BatchBackfillImagesForUser(req.ImageUUIDs, req.BackendID, userID, h.StorageManager)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid action for user"})
 		return
 	}
+
+	if err != nil {
+		// This could be a permission error or other internal error.
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Batch task started for your images", "task_id": taskID})
 }
 
 // ListImagesHandler lists images, filtered by user role.

@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>雁陎图床 - 后台管理</title>
-    <script src="/static/js/toast.js" defer></script>
     <link rel="stylesheet" href="/static/css/admin.css">
+    <script src="/static/js/toast.js" defer></script>
     <script>
         function checkAuth() {
             if (!localStorage.getItem('jwt_token')) {
@@ -15,8 +15,6 @@
         }
         checkAuth();
 
-        // --- 全局fetch已被移除 ---
-        // 增加一个辅助函数来为 fetch 添加认证头
         function fetchWithAuth(url, options) {
             options = options || {};
             options.headers = options.headers || {};
@@ -26,14 +24,11 @@
             }
 
             return fetch(url, options).then(response => {
-                if (response.status === 401 || response.status === 403) {
-                    // 仅当确认是token失效时才跳转，这里简化为检查，但真正的token失效检查应由API返回特定错误码
-                    // 对于密码错误等情况，API应返回其他4xx码，不由这里处理
-                    const path = window.location.pathname;
-                    if (path.startsWith('/admin')) { // 只在admin页面执行跳转
-                         console.error("Authentication error, redirecting...");
-                         // logout();
-                    }
+                if (response.status === 401) {
+                    // Only handle 401 for potential token expiry.
+                    // Let local handlers deal with 403 (Forbidden) etc.
+                    console.error("Authentication expired or invalid, redirecting...");
+                    logout();
                 }
                 return response;
             });
@@ -46,7 +41,7 @@
         <div class="header">
             <h1>图床管理后台</h1>
             <div class="header-actions">
-                <a href="/" target="_blank">📷 返回主页</a>
+                <a href="/">📷 返回主页</a>
                 <a href="#" onclick="logout()">🚪 退出登录</a>
             </div>
         </div>
@@ -76,20 +71,18 @@
 
     document.addEventListener('DOMContentLoaded', async () => {
         try {
-            // 使用新的带认证的fetch函数
             const userInfoRes = await fetchWithAuth('/api/user/info');
             if (userInfoRes.ok) {
                 const userInfo = await userInfoRes.json();
-                userRole = userInfo.role; // Store the role
+                userRole = userInfo.role;
                 localStorage.setItem('user_id', userInfo.user_id);
                 localStorage.setItem('user_role', userRole);
 
-                renderTabsBasedOnRole(); // Render UI based on role
+                renderTabsBasedOnRole();
 
                 const lastTab = localStorage.getItem('activeAdminTab') || 'overview';
                 showSection(lastTab);
             } else {
-                 // 如果获取用户信息失败，说明token可能已失效
                 logout();
                 return;
             }
@@ -123,18 +116,14 @@
     }
 
     function showSection(sectionId) {
-        // Prevent non-admins from accessing admin sections
         const adminSections = ['tasks', 'backends', 'settings'];
         if (userRole !== 'admin' && adminSections.includes(sectionId)) {
             beautifulAlert.alert('您没有权限访问此页面。', 'error');
-            // Default to a safe section if access is denied
             sectionId = 'overview';
         }
-        // If an admin logs out and a user logs in, the last opened tab might be an admin one
-        if (userRole !== 'admin' && (localStorage.getItem('activeAdminTab') !== 'overview' && localStorage.getItem('activeAdminTab') !== 'images' && localStorage.getItem('activeAdminTab') !== 'users')) {
+        if (userRole !== 'admin' && !['overview', 'images', 'users'].includes(localStorage.getItem('activeAdminTab'))) {
              sectionId = 'overview';
         }
-
 
         localStorage.setItem('activeAdminTab', sectionId);
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -151,13 +140,12 @@
                 case 'tasks': if (userRole === 'admin') loadTasks(); break;
                 case 'backends': if (userRole === 'admin') loadBackends(); break;
                 case 'settings': if (userRole === 'admin') loadSettings(); break;
-                case 'users': loadUsers(); break; // This function will handle role logic internally
+                case 'users': loadUsers(); break;
             }
         }
     }
     
     async function loadOverview() {
-        // This is safe for all roles
         const section = document.getElementById('overview');
         section.innerHTML = `
             <div class="stats-grid">
@@ -421,7 +409,6 @@
         loadAPITokens();
     }
     
-    // ... (rest of the script is unchanged)
     function searchImages() { loadImages(1); }
     function renderPagination(total, page, pageSize) {
         const controls = document.getElementById('paginationControls');
@@ -453,21 +440,26 @@
         const selectAllCheckbox = document.getElementById('selectAllCheckbox');
         if (selectAllCheckbox) selectAllCheckbox.checked = allPageSelected;
     }
+
     async function handleBatchDelete() {
         if (selectedImages.size === 0) { beautifulAlert.alert("请至少选择一张图片。", 'warning'); return; }
         const confirmed = await beautifulAlert.confirm(`确定删除选中的 ${selectedImages.size} 张图片吗?`);
         if (!confirmed) return;
-        const res = await fetchWithAuth('/api/admin/images/batch', {
+        const endpoint = userRole === 'admin' ? '/api/admin/images/batch' : '/api/images/batch';
+        const res = await fetchWithAuth(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'delete', image_uuids: Array.from(selectedImages) })
         });
         if (res.ok) {
-            beautifulAlert.alert('批量删除任务已开始','success');
+            beautifulAlert.toast('批量删除任务已开始','success');
             selectedImages.clear();
             loadImages(currentPage);
-            showSection('tasks');
-        } else { beautifulAlert.alert('批量删除失败', 'error'); }
+            if (userRole === 'admin') showSection('tasks');
+        } else {
+             const err = await res.json();
+             beautifulAlert.alert('批量删除失败: ' + (err.error || '未知错误'), 'error');
+        }
     }
     async function handleBatchBackfill() {
         if (selectedImages.size === 0) {
@@ -475,7 +467,7 @@
             return;
         }
         
-        const backends = await (await fetchWithAuth('/api/admin/backends/all')).json();
+        const backends = await (await fetchWithAuth('/api/backends')).json();
         if (!backends || backends.length === 0) {
             beautifulAlert.alert("没有可用的存储后端。", 'error');
             return;
@@ -499,7 +491,8 @@
             beautifulAlert.alert("请选择一个后端。", "warning");
             return;
         }
-        const res = await fetchWithAuth('/api/admin/images/batch', {
+        const endpoint = userRole === 'admin' ? '/api/admin/images/batch' : '/api/images/batch';
+        const res = await fetchWithAuth(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -509,11 +502,11 @@
             })
         });
         if (res.ok) {
-            beautifulAlert.alert('批量补传任务已开始。', 'info');
+            beautifulAlert.toast('批量补传任务已开始。', 'info');
             closeModal('batchBackfillModal');
             selectedImages.clear();
             loadImages(currentPage);
-            showSection('tasks');
+            if (userRole === 'admin') showSection('tasks');
         } else {
             const err = await res.json();
             beautifulAlert.alert('任务开始失败: ' + (err.error || '未知错误'), 'error');
