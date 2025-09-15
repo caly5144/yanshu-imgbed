@@ -611,12 +611,23 @@ func backfillFromLocalFile(image *database.Image, localPath string, targetBacken
 func parseUploadResult(result, uploaderType string) (string, string) {
 	finalURL := result
 	deleteIdentifier := ""
-	if uploaderType == "sm.ms" {
-		if parts := strings.Split(result, "@@@"); len(parts) == 2 {
+
+	if uploaderType == "sm.ms" || uploaderType == "oss" {
+		parts := strings.Split(result, "@@@")
+		if len(parts) == 2 {
 			finalURL = parts[0]
 			deleteIdentifier = parts[1]
+			return finalURL, deleteIdentifier // Success, return early
 		}
 	}
+
+	// Fallback for OSS if '@@@' is missing
+	if uploaderType == "oss" {
+		if parsedURL, err := url.Parse(result); err == nil {
+			deleteIdentifier = strings.TrimPrefix(parsedURL.Path, "/")
+		}
+	}
+
 	return finalURL, deleteIdentifier
 }
 

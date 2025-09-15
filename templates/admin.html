@@ -716,7 +716,7 @@
             <div class="modal-header"><h2 class="modal-title">${id ? '编辑' : '添加'}后端</h2></div>
             <form action="/api/admin/backends" method="post">
                 <div class="form-group"><label>名称</label><input type="text" class="form-control" name="name" required></div>
-                <div class="form-group"><label>类型</label><select class="form-control" name="type" onchange="updateConfigFields(this.value)"><option value="local">本地</option><option value="sm.ms">SM.MS</option></select></div>
+                <div class="form-group"><label>类型</label><select class="form-control" name="type" onchange="updateConfigFields(this.value)"><option value="local">本地</option><option value="sm.ms">SM.MS</option><option value="oss">阿里云OSS</option></select></div>
                 <div class="form-group"><label>优先级</label><input type="number" class="form-control" name="priority" value="1" required></div>
                 <div id="configFields"></div>
                 <div id="smmsValidationArea" style="display: none; margin-top: 15px; text-align: right;">
@@ -755,6 +755,14 @@
             container.innerHTML = `
                 <div class="form-group"><label>API URL</label><input class="form-control" name="baseURL" value="${config.baseURL || 'https://smms.app/api/v2/'}"></div>
                 <div class="form-group"><label>API Token</label><input type="password" class="form-control" name="token" value="${config.token || ''}"></div>`;
+        } else if (type === 'oss') {
+            container.innerHTML = `
+                <div class="form-group"><label>Endpoint</label><input class="form-control" name="endpoint" placeholder="例如: oss-cn-hangzhou.aliyuncs.com" value="${config.endpoint || ''}"></div>
+                <div class="form-group"><label>Bucket 名称</label><input class="form-control" name="bucket" value="${config.bucket || ''}"></div>
+                <div class="form-group"><label>AccessKey ID</label><input class="form-control" name="accessKeyId" value="${config.accessKeyId || ''}"></div>
+                <div class="form-group"><label>AccessKey Secret</label><input type="password" class="form-control" name="accessKeySecret" value="${config.accessKeySecret || ''}"></div>
+                <div class="form-group"><label>自定义域名 (可选)</label><input class="form-control" name="publicUrl" placeholder="例如: https://img.yourdomain.com" value="${config.publicUrl || ''}"></div>
+                <div class="form-group"><label>存储路径前缀 (可选)</label><input class="form-control" name="uploadPath" placeholder="例如: images/2025" value="${config.uploadPath || ''}"></div>`;
         }
     }
     async function validateSmmsConnection() {

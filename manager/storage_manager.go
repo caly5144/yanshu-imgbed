@@ -75,6 +75,13 @@ func (sm *StorageManager) Refresh() error {
 			uploader = storage.NewLocalUploader(configMap["storagePath"], configMap["publicUrl"])
 		case "sm.ms":
 			uploader = storage.NewSmmsUploader(configMap["baseURL"], configMap["token"])
+		case "oss":
+			var err error
+			uploader, err = storage.NewOssUploader(configMap)
+			if err != nil {
+				log.Printf("Error initializing OSS backend %s (ID: %d): %v. Skipping.", backend.Name, backend.ID, err)
+				continue
+			}
 		// 在此添加其他存储类型的初始化逻辑
 		default:
 			log.Printf("Unsupported backend type: %s for backend %s (ID: %d). Skipping.", backend.Type, backend.Name, backend.ID)
