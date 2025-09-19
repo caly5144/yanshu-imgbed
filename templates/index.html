@@ -183,7 +183,7 @@
         function showPreview(imageData) {
             const preview = document.createElement('div');
             preview.className = 'preview-item';
-            const imgUrl = `/i/${imageData.hash}`;
+            const imgUrl = `/image/${imageData.hash}.jpg`;
             let backendLinksHtml = '';
             if (imageData.locations && imageData.locations.length > 0) {
                 backendLinksHtml = `<h4 style="margin-top: 20px; margin-bottom: 12px;">分发链接:</h4>`;

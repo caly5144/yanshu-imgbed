@@ -60,7 +60,7 @@ func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, s
 	{
 		authGroup.POST("/login", api.LoginHandler)
 	}
-	r.GET("/i/:uuid", api.ServeImageHandler)
+	r.GET("/image/:filename", api.ServeImageHandler)
 	r.GET("/api/random", api.GetRandomImageRedirectHandler) // Random image API
 
 	// API routes requiring JWT Token (user and admin)

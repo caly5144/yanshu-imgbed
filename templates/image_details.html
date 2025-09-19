@@ -106,7 +106,7 @@
         async function loadImageDetails() {
             const uuid = getUuidFromPath();
             if (!uuid) return;
-            document.getElementById('imagePreview').src = `/i/${uuid}`;
+            document.getElementById('imagePreview').src = `/image/${uuid}.jpg`;
             const response = await fetch(`/api/admin/images/${uuid}`);
             if (!response.ok) {
                 beautifulAlert.alert('加载图片详情失败', 'error');
@@ -146,7 +146,7 @@
             let url, filename = imageData.OriginalFilename;
             
             if (currentTab === 'distribution') {
-                url = `${window.location.origin}/i/${imageData.UUID}`;
+                url = `${window.location.origin}/image/${imageData.UUID}.jpg`;
                 statusArea.style.display = 'none';
                 randomArea.style.display = 'block';
                 updateRandomStatusUI();

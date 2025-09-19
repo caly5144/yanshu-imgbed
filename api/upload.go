@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"yanshu-imgbed/service"
@@ -18,10 +19,8 @@ func GetRandomImageRedirectHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-
-	// Construct the redirect URL and perform a 302 redirect.
-	// This reuses the existing /i/:uuid logic.
-	redirectURL := fmt.Sprintf("/i/%s", uuid)
+	// --- 已修改：跳转到新的URL格式 ---
+	redirectURL := fmt.Sprintf("/image/%s.jpg", uuid)
 	c.Redirect(http.StatusFound, redirectURL)
 }
 
@@ -81,13 +80,18 @@ func (h *APIHandlers) UploadHandler(c *gin.Context) {
 			"filename":  image.OriginalFilename,
 			"size":      image.FileSize,
 			"locations": locationsResponse,
-			"view_url":  fmt.Sprintf("%s/i/%s", c.Request.Host, image.UUID),
+			// --- 已修改：更新 view_url 格式 ---
+			"view_url": fmt.Sprintf("/image/%s.jpg", image.UUID),
 		},
 	})
 }
 
+// ServeImageHandler -- 已修改：从新的URL格式中解析UUID
 func ServeImageHandler(c *gin.Context) {
-	uuid := c.Param("uuid")
+	filename := c.Param("filename")
+	// 从 "ca154ca5-8409-40bb-aa5e-162c8a3ba6e6.jpg" 中提取 "ca154ca5-8409-40bb-aa5e-162c8a3ba6e6"
+	uuid := strings.TrimSuffix(filename, filepath.Ext(filename))
+
 	location, err := service.GetHealthyStorageLocation(uuid)
 
 	if err != nil {

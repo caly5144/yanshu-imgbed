@@ -169,7 +169,7 @@
             recentData.forEach(img => {
                 const item = document.createElement('div');
                 item.className = 'image-item';
-                item.innerHTML = `<img src="/i/${img.UUID}" alt="${img.OriginalFilename}"><div class="image-item-info">${img.OriginalFilename}</div>`;
+                item.innerHTML = `<img src="/image/${img.UUID}.jpg" alt="${img.OriginalFilename}"><div class="image-item-info">${img.OriginalFilename}</div>`;
                 recentGrid.appendChild(item);
             });
         } else {
@@ -231,7 +231,7 @@
 
             tr.innerHTML = `
                 <td><input type="checkbox" class="image-checkbox" data-uuid="${image.UUID}" onchange="updateSelection()"></td>
-                <td><img src="/i/${image.UUID}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 8px;"></td>
+                <td><img src="/image/${image.UUID}.jpg" style="width: 50px; height: 50px; object-fit: cover; border-radius: 8px;"></td>
                 <td>${image.OriginalFilename || 'N/A'}${randomIcon}</td>
                 <td>${dimensions}</td>
                 <td>${formatSize(image.FileSize)}</td>
@@ -239,7 +239,7 @@
                 <td>${statusBadge}</td>
                 <td>
                     <button class="btn btn-primary btn-small" onclick="window.open('/admin/images/${image.UUID}', '_blank')">查看</button>
-                    <button class="btn btn-primary btn-small" onclick="copyLink('${window.location.origin}/i/${image.UUID}')">复制</button>
+                    <button class="btn btn-primary btn-small" onclick="copyLink('${window.location.origin}/image/${image.UUID}.jpg')">复制</button>
                     <button class="btn btn-danger btn-small" onclick="deleteImage('${image.UUID}')">删除</button>
                 </td>`;
             tr.querySelector('.image-checkbox').checked = selectedImages.has(image.UUID);
