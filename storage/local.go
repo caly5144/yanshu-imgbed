@@ -22,23 +22,13 @@ func NewLocalUploader(storagePath, publicURL string) *LocalUploader {
 	return &LocalUploader{StoragePath: storagePath, PublicURL: publicURL}
 }
 
-// --- 已修改：匹配新的接口，直接使用 src ---
+// Upload -- 已修改：现在返回一个相对路径
 func (l *LocalUploader) Upload(fileHeader *multipart.FileHeader, uniqueFilename string, src io.Reader) (string, error) {
-	// 不再需要从 fileHeader.Open()，直接使用传入的 src
-	return l.saveFile(src, uniqueFilename)
-}
+	// 确保StoragePath是干净的，以用于构建相对URL
+	cleanStoragePath := filepath.Base(l.StoragePath)
+	relativeURL := fmt.Sprintf("/%s/%s", cleanStoragePath, uniqueFilename)
 
-func (l *LocalUploader) UploadFromFile(localPath string, uniqueFilename string) (string, error) {
-	src, err := os.Open(localPath)
-	if err != nil {
-		return "", err
-	}
-	defer src.Close()
-
-	return l.saveFile(src, uniqueFilename)
-}
-
-func (l *LocalUploader) saveFile(src io.Reader, uniqueFilename string) (string, error) {
+	// 物理文件保存逻辑不变
 	dst := filepath.Join(l.StoragePath, uniqueFilename)
 	out, err := os.Create(dst)
 	if err != nil {
@@ -50,7 +40,18 @@ func (l *LocalUploader) saveFile(src io.Reader, uniqueFilename string) (string, 
 		return "", err
 	}
 
-	return fmt.Sprintf("%s/uploads/%s", l.PublicURL, uniqueFilename), nil
+	// 返回相对路径，例如 "/uploads/uuid.jpg"
+	return relativeURL, nil
+}
+
+func (l *LocalUploader) UploadFromFile(localPath string, uniqueFilename string) (string, error) {
+	src, err := os.Open(localPath)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+
+	return l.Upload(nil, uniqueFilename, src)
 }
 
 func (l *LocalUploader) Type() string {

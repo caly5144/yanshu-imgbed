@@ -106,7 +106,7 @@ func SetupRouter(storageManager *manager.StorageManager, templatesFS embed.FS, s
 		adminApiGroup.POST("/images/batch", apiHandlers.BatchAdminImageHandler) // Renamed from BatchImageHandler
 		adminApiGroup.POST("/images/:uuid/toggle-random", api.ToggleImageRandomStatusHandler)
 		adminApiGroup.GET("/tasks", api.ListTasksHandler)
-		adminApiGroup.GET("/images/:uuid", api.GetImageDetailsHandler)
+		adminApiGroup.GET("/images/:uuid", apiHandlers.GetImageDetailsHandler)
 		adminApiGroup.POST("/storagelocations/:id/toggle", api.ToggleStorageLocationStatusHandler)
 	}
 

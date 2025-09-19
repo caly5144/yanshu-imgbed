@@ -712,11 +712,14 @@
     async function showAddBackendModal(id = null) {
         currentEditingBackendId = id;
         
+        const isEditMode = id !== null;
+        const typeSelectDisabled = isEditMode ? 'disabled' : '';
+
         let content = `
-            <div class="modal-header"><h2 class="modal-title">${id ? '编辑' : '添加'}后端</h2></div>
+            <div class="modal-header"><h2 class="modal-title">${isEditMode ? '编辑' : '添加'}后端</h2></div>
             <form action="/api/admin/backends" method="post">
                 <div class="form-group"><label>名称</label><input type="text" class="form-control" name="name" required></div>
-                <div class="form-group"><label>类型</label><select class="form-control" name="type" onchange="updateConfigFields(this.value)"><option value="local">本地</option><option value="sm.ms">SM.MS</option><option value="oss">阿里云OSS</option></select></div>
+                <div class="form-group"><label>类型</label><select class="form-control" name="type" onchange="updateConfigFields(this.value)" ${typeSelectDisabled}><option value="local">本地</option><option value="sm.ms">SM.MS</option><option value="oss">阿里云OSS</option></select></div>
                 <div class="form-group"><label>优先级</label><input type="number" class="form-control" name="priority" value="1" required></div>
                 <div id="configFields"></div>
                 <div id="smmsValidationArea" style="display: none; margin-top: 15px; text-align: right;">
@@ -728,7 +731,7 @@
         
         await showModal('addBackendModal', content);
         
-        if (id) {
+        if (isEditMode) {
             const backends = await (await fetchWithAuth('/api/admin/backends/all')).json();
             const backend = backends.find(b => b.ID === id);
             if (backend) {
@@ -736,9 +739,13 @@
                 modal.querySelector('[name="name"]').value = backend.Name;
                 modal.querySelector('[name="type"]').value = backend.Type;
                 modal.querySelector('[name="priority"]').value = backend.Priority;
-                updateConfigFields(backend.Type, backend.Config);
+                
+                // 确保 config 是一个对象，然后更新字段
+                const configObject = (typeof backend.Config === 'string') ? JSON.parse(backend.Config) : backend.Config;
+                updateConfigFields(backend.Type, configObject || {});
             }
         } else {
+            // 对于新后端，默认显示 local 的配置
             updateConfigFields('local', {});
         }
     }
@@ -746,9 +753,18 @@
         const container = document.getElementById('configFields');
         const smmsArea = document.getElementById('smmsValidationArea');
         smmsArea.style.display = 'none';
+
+        const isEditMode = currentEditingBackendId !== null;
+
         if (type === 'local') {
+            const storagePathReadonly = isEditMode ? 'readonly' : '';
+            const helpText = isEditMode ? '<small style="color: var(--text-secondary); margin-top: 4px; display: block;">存储路径在创建后不可修改。</small>' : '';
             container.innerHTML = `
-                <div class="form-group"><label>存储路径</label><input class="form-control" name="storagePath" value="${config.storagePath || 'uploads'}"></div>
+                <div class="form-group">
+                    <label>存储路径</label>
+                    <input class="form-control" name="storagePath" value="${config.storagePath || 'uploads'}" ${storagePathReadonly}>
+                    ${helpText}
+                </div>
                 <div class="form-group"><label>访问URL前缀</label><input class="form-control" name="publicUrl" value="${config.publicUrl || 'http://127.0.0.1:3030'}"></div>`;
         } else if (type === 'sm.ms') {
             smmsArea.style.display = 'block';

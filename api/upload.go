@@ -70,7 +70,7 @@ func (h *APIHandlers) UploadHandler(c *gin.Context) {
 		locationsResponse = append(locationsResponse, gin.H{
 			"id":           loc.ID,
 			"backend_name": backendName,
-			"url":          loc.URL,
+			"url":          h.getFullURL(loc),
 			"is_active":    loc.IsActive,
 		})
 	}

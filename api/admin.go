@@ -177,9 +177,15 @@ func ListAllBackendsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, backends)
 }
 
-// UpdateBackendHandler ...
 func (h *APIHandlers) UpdateBackendHandler(c *gin.Context) {
 	backendID, _ := strconv.Atoi(c.Param("id"))
+
+	var existingBackend database.Backend
+	if err := database.DB.First(&existingBackend, backendID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Backend not found"})
+		return
+	}
+
 	var req database.Backend
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -189,21 +195,37 @@ func (h *APIHandlers) UpdateBackendHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON in config field"})
 		return
 	}
-	var backend database.Backend
-	if err := database.DB.First(&backend, backendID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Backend not found"})
-		return
+
+	// 如果是本地存储，则强制保留原始的 storagePath
+	if existingBackend.Type == "local" {
+		var existingConfig map[string]interface{}
+		if err := json.Unmarshal(existingBackend.Config, &existingConfig); err == nil {
+			var newConfig map[string]interface{}
+			if err := json.Unmarshal(req.Config, &newConfig); err == nil {
+				// 强制使用旧的 storagePath
+				if oldPath, ok := existingConfig["storagePath"]; ok {
+					newConfig["storagePath"] = oldPath
+				}
+				// 将更新后的配置重新序列化
+				updatedConfigJSON, _ := json.Marshal(newConfig)
+				req.Config = updatedConfigJSON
+			}
+		}
 	}
-	backend.Name = req.Name
-	backend.Type = req.Type
-	backend.Config = req.Config
-	backend.Priority = req.Priority
-	if err := database.DB.Save(&backend).Error; err != nil {
+
+	// 更新字段
+	existingBackend.Name = req.Name
+	// 不允许修改类型
+	// existingBackend.Type = req.Type
+	existingBackend.Config = req.Config
+	existingBackend.Priority = req.Priority
+
+	if err := database.DB.Save(&existingBackend).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update backend"})
 		return
 	}
 	go h.StorageManager.Refresh()
-	c.JSON(http.StatusOK, backend)
+	c.JSON(http.StatusOK, existingBackend)
 }
 
 // DeleteBackendHandler ...
@@ -242,7 +264,7 @@ func ValidateSmmsTokenHandler(c *gin.Context) {
 }
 
 // GetImageDetailsHandler gets details for a single image.
-func GetImageDetailsHandler(c *gin.Context) {
+func (h *APIHandlers) GetImageDetailsHandler(c *gin.Context) {
 	uuid := c.Param("uuid")
 	var image database.Image
 	err := database.DB.Preload("StorageLocations.Backend").Where("uuid = ?", uuid).First(&image).Error
@@ -254,7 +276,25 @@ func GetImageDetailsHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve image details"})
 		return
 	}
-	c.JSON(http.StatusOK, image)
+	type StorageLocationResponse struct {
+		database.StorageLocation
+		URL string `json:"URL"` // 覆盖原始URL字段
+	}
+
+	type ImageDetailResponse struct {
+		database.Image
+		StorageLocations []StorageLocationResponse `json:"StorageLocations"`
+	}
+
+	response := ImageDetailResponse{Image: image}
+	for _, loc := range image.StorageLocations {
+		response.StorageLocations = append(response.StorageLocations, StorageLocationResponse{
+			StorageLocation: loc,
+			URL:             h.getFullURL(loc), // 使用辅助方法
+		})
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // ToggleStorageLocationStatusHandler toggles the IsActive status of a StorageLocation.
