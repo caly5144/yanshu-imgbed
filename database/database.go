@@ -61,7 +61,7 @@ func initDefaultData() {
 		log.Println("Initializing default settings...")
 		settings := []Setting{
 			{Key: "access_policy", Value: "random"},
-			{Key: "retry_count", Value: "3"},
+			{Key: "retry_count", Value: "0"},
 			{Key: "max_upload_mb", Value: "10"},
 		}
 		DB.Create(&settings)

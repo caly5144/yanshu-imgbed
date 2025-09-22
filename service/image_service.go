@@ -372,7 +372,8 @@ func GetHealthyStorageLocation(imageUUID string) (*database.StorageLocation, err
 
 	var availableLocations []database.StorageLocation
 	for _, loc := range image.StorageLocations {
-		if loc.IsActive && loc.Backend.AllowRedirect && loc.FailureCount < maxFailures {
+		failureCheckPassed := (maxFailures == 0) || (loc.FailureCount < maxFailures)
+		if loc.IsActive && loc.Backend.AllowRedirect && failureCheckPassed {
 			availableLocations = append(availableLocations, loc)
 		}
 	}
@@ -392,6 +393,16 @@ func GetHealthyStorageLocation(imageUUID string) (*database.StorageLocation, err
 		})
 	}
 
+	// --- 已修改：为无限重试模式增加特殊处理 ---
+	if maxFailures == 0 {
+		// 在无限重试模式下，我们信任链接，不进行健康检查，直接返回第一个
+		if len(availableLocations) > 0 {
+			return &availableLocations[0], nil
+		}
+		// 如果没有可用的（比如都被手动禁用了），则继续执行到最后的错误返回
+	}
+
+	// 对于有限重试模式，执行健康检查
 	for i := range availableLocations {
 		loc := &availableLocations[i]
 		isHealthy := false
