@@ -78,6 +78,7 @@ tbody tr:last-child td { border-bottom: none; }
 .btn-danger:hover { background: #dc2626; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3); }
 .btn-secondary { background: var(--bg-hover); color: var(--text-primary); border: 1px solid var(--border-color); }
 .btn-secondary:hover { background: var(--border-color); }
+.btn[disabled] { opacity: 0.5; cursor: not-allowed; }
 .btn-small { padding: 6px 12px; font-size: 13px; }
 .status-badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; display: inline-block; }
 .status-active { background: rgba(16, 185, 129, 0.1); color: var(--secondary); }
@@ -106,8 +107,12 @@ tbody tr:last-child td { border-bottom: none; }
 input[type="checkbox"] { width: 20px; height: 20px; cursor: pointer; position: relative; -webkit-appearance: none; appearance: none; background: var(--bg-card); border: 2px solid var(--border-color); border-radius: 4px; transition: all 0.2s ease; }
 input[type="checkbox"]:checked { background: var(--primary); border-color: var(--primary); }
 input[type="checkbox"]:checked::after { content: ''; position: absolute; top: 2px; left: 6px; width: 6px; height: 10px; border: solid white; border-width: 0 2px 2px 0; transform: rotate(45deg); }
-.pagination-controls { display: flex; justify-content: center; gap: 8px; margin-top: 24px; }
-.pagination-controls button { min-width: 40px; height: 40px; border-radius: 8px; font-weight: 600; }
+.pagination-controls { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; flex-wrap: wrap; gap: 20px;}
+.pagination-pages { display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pagination-jump { display: flex; align-items: center; gap: 8px; }
+.pagination-info { font-size: 14px; color: var(--text-secondary); font-weight: 500; }
+.pagination-pages button { min-width: 40px; height: 40px; border-radius: 8px; font-weight: 600; }
+.pagination-ellipsis { display: inline-flex; align-items: center; justify-content: center; min-width: 40px; height: 40px; color: var(--text-secondary); }
 .js-loading .content { opacity: 0.5; pointer-events: none; }
 ::-webkit-scrollbar { width: 10px; }
 ::-webkit-scrollbar-track { background: var(--bg-hover); border-radius: 5px; }
@@ -120,4 +125,5 @@ input[type="checkbox"]:checked::after { content: ''; position: absolute; top: 2p
     .tabs { flex-direction: column; }
     .stats-grid { grid-template-columns: 1fr; }
     .content { padding: 20px; }
+    .pagination-controls { justify-content: center; }
 }
