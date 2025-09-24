@@ -177,7 +177,7 @@
         }
     }
     
-    async function loadImages(page = 1) {
+    async function loadImages(page = 1, keyword = '') { // 增加了 keyword 参数
         currentPage = page;
         const section = document.getElementById('images');
         
@@ -196,7 +196,7 @@
         section.innerHTML = `
             <div id="batchActionBar" style="margin-bottom: 15px;">${batchActionBarHTML}</div>
             <div style="margin-bottom: 15px;">
-                <input id="imageSearchInput" type="text" placeholder="搜索图片..." style="width: 300px; display: inline-block;">
+                <input id="imageSearchInput" type="text" placeholder="搜索图片..." style="width: 300px; display: inline-block;" value="${keyword}">
                 <button class="btn btn-primary" onclick="searchImages()">搜索</button>
             </div>
             <table>
@@ -211,15 +211,20 @@
             <div id="paginationControls" class="pagination-controls"></div>`;
 
         const imagesList = section.querySelector('#imagesList');
-        const keywordInput = section.querySelector('#imageSearchInput');
-        const keyword = keywordInput ? keywordInput.value.trim() : '';
         imagesList.innerHTML = `<tr><td colspan="8">加载中...</td></tr>`;
+
         const data = await (await fetchWithAuth(`/api/images?page=${page}&pageSize=10&keyword=${encodeURIComponent(keyword)}`)).json();
+        
+        // --- 新增：在重新渲染后，将光标聚焦到输入框末尾 ---
+        const keywordInput = document.getElementById('imageSearchInput');
+        keywordInput.focus();
+        keywordInput.selectionStart = keywordInput.selectionEnd = keywordInput.value.length;
+        // --- 新增结束 ---
         
         imagesList.innerHTML = '';
         if (!data.images || data.images.length === 0) {
             imagesList.innerHTML = `<tr><td colspan="8">暂无图片</td></tr>`;
-            renderPagination(0, page, 10);
+            renderPagination(0, page, 10, keyword); // 传递keyword
             return;
         }
         data.images.forEach(image => {
@@ -245,8 +250,95 @@
             tr.querySelector('.image-checkbox').checked = selectedImages.has(image.UUID);
             imagesList.appendChild(tr);
         });
-        renderPagination(data.total, data.page, data.pageSize);
+        renderPagination(data.total, data.page, data.pageSize, keyword); // 传递keyword
         updateSelection();
+    }
+    
+    // searchImages 函数修改
+    function searchImages() {
+        const keywordInput = document.getElementById('imageSearchInput');
+        const keyword = keywordInput ? keywordInput.value.trim() : '';
+        loadImages(1, keyword); // 将读取到的 keyword 传递进去
+    }
+
+    // goToPage 函数修改
+    function goToPage(totalPages, keyword = '') { // 增加 keyword 参数
+        const input = document.getElementById('pageInput');
+        if (!input) return;
+        const page = parseInt(input.value);
+        if (!isNaN(page) && page > 0 && page <= totalPages) {
+            loadImages(page, keyword); // 传递 keyword
+        } else {
+            beautifulAlert.alert(`请输入一个 1 到 ${totalPages} 之间的有效页码。`, 'warning');
+            input.value = '';
+        }
+    }
+
+    // renderPagination 函数修改
+    function renderPagination(total, page, pageSize, keyword = '') { // 增加 keyword 参数
+        const controls = document.getElementById('paginationControls');
+        if (!controls) return;
+        
+        const totalPages = Math.ceil(total / pageSize);
+        if (totalPages <= 1) {
+            controls.innerHTML = '';
+            return;
+        }
+
+        let pageControlsHtml = '<div class="pagination-pages">';
+        const maxVisiblePages = 5;
+        let startPage, endPage;
+
+        if (totalPages <= maxVisiblePages + 2) {
+            startPage = 1;
+            endPage = totalPages;
+        } else {
+            const maxPagesBeforeCurrent = Math.floor(maxVisiblePages / 2);
+            const maxPagesAfterCurrent = Math.ceil(maxVisiblePages / 2) - 1;
+            if (page <= maxPagesBeforeCurrent + 1) {
+                startPage = 1;
+                endPage = maxVisiblePages;
+            } else if (page + maxPagesAfterCurrent >= totalPages) {
+                startPage = totalPages - maxVisiblePages + 1;
+                endPage = totalPages;
+            } else {
+                startPage = page - maxPagesBeforeCurrent;
+                endPage = page + maxPagesAfterCurrent;
+            }
+        }
+        
+        pageControlsHtml += `<button class="btn btn-secondary" onclick="loadImages(1, '${keyword}')" ${page === 1 ? 'disabled' : ''}>« 首页</button>`;
+        pageControlsHtml += `<button class="btn btn-secondary" onclick="loadImages(${page - 1}, '${keyword}')" ${page === 1 ? 'disabled' : ''}>‹ 上一页</button>`;
+        
+        if (startPage > 1) {
+            pageControlsHtml += `<span class="pagination-ellipsis">...</span>`;
+        }
+
+        for (let i = startPage; i <= endPage; i++) {
+            pageControlsHtml += `<button class="btn ${i === page ? 'btn-primary' : 'btn-secondary'}" onclick="loadImages(${i}, '${keyword}')">${i}</button>`;
+        }
+
+        if (endPage < totalPages) {
+            pageControlsHtml += `<span class="pagination-ellipsis">...</span>`;
+        }
+        
+        pageControlsHtml += `<button class="btn btn-secondary" onclick="loadImages(${page + 1}, '${keyword}')" ${page === totalPages ? 'disabled' : ''}>下一页 ›</button>`;
+        pageControlsHtml += `<button class="btn btn-secondary" onclick="loadImages(${totalPages}, '${keyword}')" ${page === totalPages ? 'disabled' : ''}>末页 »</button>`;
+        
+        pageControlsHtml += `
+            <div class="pagination-jump" style="margin-left: 16px;">
+                <input type="number" id="pageInput" class="form-control" style="width: 80px; height: 40px; text-align: center;" min="1" max="${totalPages}" placeholder="页码" onkeydown="if(event.key==='Enter') goToPage(${totalPages}, '${keyword}')">
+                <button class="btn btn-primary" style="height: 40px;" onclick="goToPage(${totalPages}, '${keyword}')">跳转</button>
+            </div>
+        `;
+
+        pageControlsHtml += '</div>';
+
+        const startItem = (page - 1) * pageSize + 1;
+        const endItem = Math.min(page * pageSize, total);
+        const infoHtml = `<div class="pagination-info">显示 ${startItem} - ${endItem} / 共 ${total} 条</div>`;
+
+        controls.innerHTML = pageControlsHtml + infoHtml;
     }
     
     async function handleBatchSetRandom(isAdding) {
@@ -410,85 +502,7 @@
         loadAPITokens();
     }
     
-    function searchImages() { loadImages(1); }
-    function goToPage(totalPages) {
-        const input = document.getElementById('pageInput');
-        if (!input) return;
-        const page = parseInt(input.value);
-        if (!isNaN(page) && page > 0 && page <= totalPages) {
-            loadImages(page);
-        } else {
-            beautifulAlert.alert(`请输入一个 1 到 ${totalPages} 之间的有效页码。`, 'warning');
-            input.value = '';
-        }
-    }
 
-    function renderPagination(total, page, pageSize) {
-        const controls = document.getElementById('paginationControls');
-        if (!controls) return;
-        
-        const totalPages = Math.ceil(total / pageSize);
-        if (totalPages <= 1) {
-            controls.innerHTML = '';
-            return;
-        }
-
-        let pageControlsHtml = '<div class="pagination-pages">';
-        const maxVisiblePages = 5;
-        let startPage, endPage;
-
-        if (totalPages <= maxVisiblePages + 2) {
-            startPage = 1;
-            endPage = totalPages;
-        } else {
-            const maxPagesBeforeCurrent = Math.floor(maxVisiblePages / 2);
-            const maxPagesAfterCurrent = Math.ceil(maxVisiblePages / 2) - 1;
-            if (page <= maxPagesBeforeCurrent + 1) {
-                startPage = 1;
-                endPage = maxVisiblePages;
-            } else if (page + maxPagesAfterCurrent >= totalPages) {
-                startPage = totalPages - maxVisiblePages + 1;
-                endPage = totalPages;
-            } else {
-                startPage = page - maxPagesBeforeCurrent;
-                endPage = page + maxPagesAfterCurrent;
-            }
-        }
-        
-        pageControlsHtml += `<button class="btn btn-secondary" onclick="loadImages(1)" ${page === 1 ? 'disabled' : ''}>« 首页</button>`;
-        pageControlsHtml += `<button class="btn btn-secondary" onclick="loadImages(${page - 1})" ${page === 1 ? 'disabled' : ''}>‹ 上一页</button>`;
-        
-        if (startPage > 1) {
-            pageControlsHtml += `<span class="pagination-ellipsis">...</span>`;
-        }
-
-        for (let i = startPage; i <= endPage; i++) {
-            pageControlsHtml += `<button class="btn ${i === page ? 'btn-primary' : 'btn-secondary'}" onclick="loadImages(${i})">${i}</button>`;
-        }
-
-        if (endPage < totalPages) {
-            pageControlsHtml += `<span class="pagination-ellipsis">...</span>`;
-        }
-        
-        pageControlsHtml += `<button class="btn btn-secondary" onclick="loadImages(${page + 1})" ${page === totalPages ? 'disabled' : ''}>下一页 ›</button>`;
-        pageControlsHtml += `<button class="btn btn-secondary" onclick="loadImages(${totalPages})" ${page === totalPages ? 'disabled' : ''}>末页 »</button>`;
-        
-        // Append jump box directly here
-        pageControlsHtml += `
-            <div class="pagination-jump" style="margin-left: 16px;">
-                <input type="number" id="pageInput" class="form-control" style="width: 80px; height: 40px; text-align: center;" min="1" max="${totalPages}" placeholder="页码" onkeydown="if(event.key==='Enter') goToPage(${totalPages})">
-                <button class="btn btn-primary" style="height: 40px;" onclick="goToPage(${totalPages})">跳转</button>
-            </div>
-        `;
-
-        pageControlsHtml += '</div>'; // Close pagination-pages
-
-        const startItem = (page - 1) * pageSize + 1;
-        const endItem = Math.min(page * pageSize, total);
-        const infoHtml = `<div class="pagination-info">显示 ${startItem} - ${endItem} / 共 ${total} 条</div>`;
-
-        controls.innerHTML = pageControlsHtml + infoHtml;
-    }
     function toggleSelectAll(checked) {
         document.querySelectorAll('.image-checkbox').forEach(cb => cb.checked = checked);
         updateSelection();
